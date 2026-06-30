@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { signOut } from "@/lib/actions/auth";
@@ -9,22 +10,48 @@ export default async function Header() {
   } = await supabase.auth.getUser();
 
   return (
-    <header className="border-b border-zinc-200 bg-white">
-      <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
-        <Link href="/" className="text-lg font-semibold text-zinc-900">
-          Gantt
+    <header className="border-b border-[#0f2340] bg-[#1A3560]">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3">
+        {/* Left: JV logo + name */}
+        <Link href="/" className="flex items-center gap-3 shrink-0">
+          <Image
+            src="/logo-jv.png"
+            alt="Anmore Operations Yard JV"
+            width={56}
+            height={56}
+            className="object-contain"
+          />
+          <div className="flex flex-col leading-tight">
+            <span className="text-base font-bold text-white tracking-wide">
+              Anmore Operations Yard
+            </span>
+            <span className="text-[11px] font-medium text-blue-200 uppercase tracking-widest">
+              Virtual Project Site
+            </span>
+          </div>
         </Link>
-        <nav className="flex items-center gap-4 text-sm">
+
+        {/* Right: nav */}
+        <nav className="flex items-center gap-3 text-sm shrink-0">
           {user ? (
             <>
-              <Link href="/projects" className="text-zinc-600 hover:text-zinc-900">
-                Projects
+              <Link href="/schedule" className="text-blue-100 hover:text-white transition-colors">
+                Master Schedule
               </Link>
-              <span className="text-zinc-400">{user.email}</span>
+              <Link href="/lookahead" className="text-blue-100 hover:text-white transition-colors">
+                Lookahead
+              </Link>
+              <Link href="/my-tasks" className="text-blue-100 hover:text-white transition-colors">
+                My Tasks
+              </Link>
+              <Link href="/sub-schedules" className="text-blue-100 hover:text-white transition-colors">
+                Sub-Schedules
+              </Link>
+              <span className="text-blue-400 hidden sm:inline">{user.email}</span>
               <form action={signOut}>
                 <button
                   type="submit"
-                  className="rounded-md border border-zinc-300 px-3 py-1.5 font-medium text-zinc-700 hover:bg-zinc-50"
+                  className="rounded-md border border-blue-400 px-3 py-1.5 font-medium text-blue-100 hover:bg-blue-800 transition-colors"
                 >
                   Log out
                 </button>
@@ -32,12 +59,15 @@ export default async function Header() {
             </>
           ) : (
             <>
-              <Link href="/login" className="text-zinc-600 hover:text-zinc-900">
+              <Link
+                href="/login"
+                className="text-blue-100 hover:text-white transition-colors"
+              >
                 Log in
               </Link>
               <Link
                 href="/signup"
-                className="rounded-md bg-zinc-900 px-3 py-1.5 font-medium text-white hover:bg-zinc-700"
+                className="rounded-md bg-[#2A6B35] px-3 py-1.5 font-medium text-white hover:bg-[#235a2c] transition-colors"
               >
                 Sign up
               </Link>

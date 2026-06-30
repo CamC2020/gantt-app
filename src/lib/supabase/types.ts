@@ -16,6 +16,7 @@ export interface Project {
   name: string;
   description: string | null;
   owner_id: string;
+  is_master: boolean;
   created_at: string;
 }
 
@@ -32,27 +33,64 @@ export interface Task {
   start_date: string;
   end_date: string;
   assignee_id: string | null;
+  champion_id: string | null;
   status: TaskStatus;
+  parent_id: string | null;
+  sort_order: number;
   created_at: string;
+  work_sat: boolean;
+  work_sun: boolean;
+  is_milestone: boolean;
+}
+
+export interface StatHoliday {
+  id: string; date: string; label: string;
+}
+
+export interface TaskSupport {
+  task_id: string;
+  user_id: string;
+}
+
+export type ReminderType = "5_day" | "1_day";
+
+export interface TaskNote {
+  id: string;
+  task_id: string;
+  user_id: string;
+  content: string;
+  updated_at: string;
+}
+
+export interface TaskDependency {
+  task_id: string;
+  predecessor_id: string;
+  lag_days: number;
 }
 
 export interface Database {
+  __InternalSupabase: {
+    PostgrestVersion: "13";
+  };
   public: {
     Tables: {
       profiles: {
         Row: Profile;
         Insert: Partial<Profile> & { id: string; email: string };
         Update: Partial<Profile>;
+        Relationships: [];
       };
       projects: {
         Row: Project;
         Insert: Partial<Project> & { name: string; owner_id: string };
         Update: Partial<Project>;
+        Relationships: [];
       };
       project_members: {
         Row: ProjectMember;
         Insert: ProjectMember;
         Update: Partial<ProjectMember>;
+        Relationships: [];
       };
       tasks: {
         Row: Task;
@@ -63,7 +101,10 @@ export interface Database {
           end_date: string;
         };
         Update: Partial<Task>;
+        Relationships: [];
       };
     };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
   };
 }

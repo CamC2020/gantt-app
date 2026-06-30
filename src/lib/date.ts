@@ -29,3 +29,31 @@ export function diffInDays(a: string, b: string): number {
 export function todayISO(): string {
   return formatISODate(new Date());
 }
+
+export function isWorkingDay(date: string, workSat: boolean, workSun: boolean, holidays: Set<string>): boolean {
+  if (holidays.has(date)) return false;
+  const dow = parseISODate(date).getDay();
+  if (dow === 6 && !workSat) return false;
+  if (dow === 0 && !workSun) return false;
+  return true;
+}
+
+export function countWorkingDays(start: string, end: string, workSat: boolean, workSun: boolean, holidays: Set<string>): number {
+  if (start > end) return 0;
+  let count = 0, cur = start;
+  while (cur <= end) {
+    if (isWorkingDay(cur, workSat, workSun, holidays)) count++;
+    cur = addDays(cur, 1);
+  }
+  return count;
+}
+
+// Adds n additional working days after start. n=0 returns start.
+export function addWorkingDays(start: string, n: number, workSat: boolean, workSun: boolean, holidays: Set<string>): string {
+  let cur = start, remaining = n;
+  while (remaining > 0) {
+    cur = addDays(cur, 1);
+    if (isWorkingDay(cur, workSat, workSun, holidays)) remaining--;
+  }
+  return cur;
+}

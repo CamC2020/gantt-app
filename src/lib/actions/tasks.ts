@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
+import { createAuthedClient } from "@/lib/supabase/server";
 import type { TaskStatus } from "@/lib/supabase/types";
 
 export interface ActionResult {
@@ -32,7 +32,7 @@ export async function createTask(
     return { error: "Start date must be before end date." };
   }
 
-  const supabase = await createClient();
+  const supabase = await createAuthedClient();
   const { error } = await supabase.from("tasks").insert({
     project_id: projectId,
     title,
@@ -73,7 +73,7 @@ export async function updateTask(
     return { error: "Start date must be before end date." };
   }
 
-  const supabase = await createClient();
+  const supabase = await createAuthedClient();
   const { error } = await supabase
     .from("tasks")
     .update({
@@ -94,7 +94,7 @@ export async function updateTask(
 }
 
 export async function deleteTask(taskId: string, projectId: string): Promise<void> {
-  const supabase = await createClient();
+  const supabase = await createAuthedClient();
   const { error } = await supabase.from("tasks").delete().eq("id", taskId);
 
   if (error) {
@@ -110,7 +110,7 @@ export async function updateTaskDates(
   startDate: string,
   endDate: string
 ): Promise<{ error: string | null }> {
-  const supabase = await createClient();
+  const supabase = await createAuthedClient();
   const { error } = await supabase
     .from("tasks")
     .update({ start_date: startDate, end_date: endDate })

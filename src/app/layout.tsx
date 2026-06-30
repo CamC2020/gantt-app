@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import Header from "@/components/layout/Header";
+import Footer from "@/components/layout/Footer";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Gantt — Collaborative scheduling",
-  description: "A collaborative Gantt chart scheduler",
+  title: "Anmore Operations Yard — JV Scheduler",
+  description: "Joint venture project scheduler for Jacob Bros, Village of Anmore, and ISL Engineering.",
 };
 
 export default function RootLayout({
@@ -28,9 +29,10 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-zinc-50">
+      <body className="min-h-full flex flex-col bg-[#f0f4f8]">
         <Header />
         <main className="flex flex-1 flex-col">{children}</main>
+        <Footer />
       </body>
     </html>
   );
