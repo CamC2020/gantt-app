@@ -16,7 +16,9 @@ const HEADER_H = 54; // month row (24px) + day row (28px) + 2px border
 const COL = {
   toggle: 26, wbs: 50, name: 180, dur: 52,
   start: 80, end: 80, pred: 60, lag: 44,
-  champ: 110, supp: 120, sat: 34, sun: 34, act: 48,
+  champ: 110, supp: 120, sat: 34, sun: 34,
+  sub: 100, crew: 50, dtc: 46,
+  act: 48,
 };
 
 // Depth-based row background (opaque — left panel must be solid to mask Gantt bars on scroll).
@@ -35,7 +37,7 @@ const CHAMP_PALETTE = [
 // ─── Types ────────────────────────────────────────────────────────────────────
 type DragMode = "move" | "resize-start" | "resize-end";
 interface DragState { taskId: string; mode: DragMode; startX: number; origStart: string; origEnd: string; }
-interface EditCell { taskId: string; field: "title" | "pred" | "lag" | "dur" | "start" | "end"; value: string; }
+interface EditCell { taskId: string; field: "title" | "pred" | "lag" | "dur" | "start" | "end" | "sub" | "crew"; value: string; }
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
 function buildChildren(tasks: Task[]) {
@@ -113,6 +115,7 @@ function buildChampionColorMap(members: Profile[]): Map<string, string> {
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function MsProjectGantt({
   projectId, initialTasks, initialDeps, initialSupport, members, readOnly = false,
+  hideStatHolidays = false, printTitle = "Master Schedule",
 }: {
   projectId: string;
   initialTasks: Task[];
@@ -120,6 +123,8 @@ export default function MsProjectGantt({
   initialSupport: TaskSupport[];
   members: Profile[];
   readOnly?: boolean;
+  hideStatHolidays?: boolean;
+  printTitle?: string;
 }) {
   const router = useRouter();
   const supa   = useMemo(() => createClient(), []);
@@ -530,6 +535,21 @@ export default function MsProjectGantt({
     await applyDateChange(taskId, { end_date: newEnd });
   }
 
+  async function saveSubcontractor(taskId: string, value: string) {
+    const sub = value.trim() || null;
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, subcontractor: sub } : t));
+    await supa.auth.getSession();
+    await supa.from("tasks").update({ subcontractor: sub }).eq("id", taskId);
+  }
+
+  async function saveCrew(taskId: string, value: string) {
+    const crew = value.trim() ? parseInt(value.trim(), 10) : null;
+    if (value.trim() && isNaN(crew!)) return;
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, crew_size: crew } : t));
+    await supa.auth.getSession();
+    await supa.from("tasks").update({ crew_size: crew }).eq("id", taskId);
+  }
+
   async function saveChampion(taskId: string, championId: string | null) {
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, champion_id: championId } : t));
     await supa.auth.getSession();
@@ -814,7 +834,7 @@ export default function MsProjectGantt({
 
     const html = `<!DOCTYPE html>
 <html><head>
-<title>Anmore Operations Yard — Master Schedule</title>
+<title>Anmore Operations Yard — ${printTitle}</title>
 <style>
   @page {
     size: A3 landscape;
@@ -844,7 +864,7 @@ export default function MsProjectGantt({
     <span style="font-size:13px;font-weight:700;color:white;letter-spacing:0.02em">Anmore Operations Yard</span>
   </div>
   <div style="text-align:center">
-    <span style="font-size:17px;font-weight:800;color:white;letter-spacing:0.06em;text-transform:uppercase">Master Schedule</span>
+    <span style="font-size:17px;font-weight:800;color:white;letter-spacing:0.06em;text-transform:uppercase">${printTitle}</span>
   </div>
   <div style="text-align:right;color:#bfdbfe;font-size:10px;font-weight:500"><span style="color:#93c5fd">Date:</span> ${printDate}</div>
 </div>
@@ -937,6 +957,9 @@ export default function MsProjectGantt({
               <H w={COL.supp}>Support</H>
               <H w={COL.sat} center title="Saturday is a working day">Sat</H>
               <H w={COL.sun} center title="Sunday is a working day">Sun</H>
+              <H w={COL.sub}>Subcontractor</H>
+              <H w={COL.crew} center>Crew</H>
+              <H w={COL.dtc} center title="Working days remaining to end date">DTC</H>
               <H w={COL.act} center />
             </div>
             <div className="flex flex-col bg-zinc-50 shrink-0" style={{ width: chartW }}>
@@ -1002,6 +1025,10 @@ export default function MsProjectGantt({
             const isED     = edit?.taskId === task.id && edit.field === "dur";
             const isES     = edit?.taskId === task.id && edit.field === "start";
             const isEE     = edit?.taskId === task.id && edit.field === "end";
+            const isESub   = edit?.taskId === task.id && edit.field === "sub";
+            const isECrew  = edit?.taskId === task.id && edit.field === "crew";
+            const today    = todayISO();
+            const dtc      = isMile ? null : (task.end_date >= today ? countWorkingDays(today, task.end_date, workSat, workSun, holidaySet) : 0);
             const champProfile = task.champion_id ? memberMap.get(task.champion_id) : undefined;
             const suppIds  = supportOf.get(task.id) ?? [];
             const champColor = task.champion_id ? (champColorMap.get(task.champion_id) ?? "#94A3B8") : "#94A3B8";
@@ -1224,6 +1251,44 @@ export default function MsProjectGantt({
                       title="Sunday counts as a working day for this task" />
                   </div>
 
+                  {/* Subcontractor */}
+                  <div className="shrink-0 flex items-center px-1 overflow-hidden" style={{ width: COL.sub }}>
+                    {hasKids ? <span className="text-[11px] text-zinc-300">—</span> : isESub ? (
+                      <input autoFocus className="w-full rounded border border-[#2E6EA6] px-1 py-0.5 text-[11px] outline-none" value={edit!.value}
+                        onChange={e => setEdit(prev => prev ? { ...prev, value: e.target.value } : prev)}
+                        onBlur={() => { saveSubcontractor(task.id, edit!.value); setEdit(null); }}
+                        onKeyDown={e => { if (e.key === "Enter" || e.key === "Escape") { if (e.key === "Enter") saveSubcontractor(task.id, edit!.value); setEdit(null); } }} />
+                    ) : (
+                      <span className={`text-[11px] truncate w-full ${readOnly ? "text-zinc-600" : "cursor-pointer hover:text-[#2E6EA6]"}`}
+                        onClick={() => !readOnly && !hasKids && setEdit({ taskId: task.id, field: "sub", value: task.subcontractor ?? "" })}>
+                        {task.subcontractor || <span className="text-zinc-300">—</span>}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Crew */}
+                  <div className="shrink-0 flex items-center justify-center px-1" style={{ width: COL.crew }}>
+                    {hasKids ? <span className="text-[11px] text-zinc-300">—</span> : isECrew ? (
+                      <input autoFocus type="number" min="0" className="w-full rounded border border-[#2E6EA6] px-1 py-0.5 text-[11px] outline-none text-center" value={edit!.value}
+                        onChange={e => setEdit(prev => prev ? { ...prev, value: e.target.value } : prev)}
+                        onBlur={() => { saveCrew(task.id, edit!.value); setEdit(null); }}
+                        onKeyDown={e => { if (e.key === "Enter" || e.key === "Escape") { if (e.key === "Enter") saveCrew(task.id, edit!.value); setEdit(null); } }} />
+                    ) : (
+                      <span className={`text-[11px] ${readOnly ? "text-zinc-600" : "cursor-pointer hover:text-[#2E6EA6]"}`}
+                        onClick={() => !readOnly && !hasKids && setEdit({ taskId: task.id, field: "crew", value: task.crew_size?.toString() ?? "" })}>
+                        {task.crew_size ?? <span className="text-zinc-300">—</span>}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Days to Completion */}
+                  <div className="shrink-0 flex items-center justify-center px-1" style={{ width: COL.dtc }}>
+                    {dtc === null ? <span className="text-[11px] text-zinc-300">—</span>
+                      : dtc === 0 ? <span className="text-[11px] text-red-500 font-semibold">0</span>
+                      : dtc <= 5 ? <span className="text-[11px] text-amber-600 font-semibold">{dtc}</span>
+                      : <span className="text-[11px] text-zinc-600">{dtc}</span>}
+                  </div>
+
                   {/* Actions */}
                   <div className="shrink-0 flex items-center justify-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" style={{ width: COL.act }}>
                     {!readOnly && (
@@ -1428,7 +1493,7 @@ export default function MsProjectGantt({
       </div>
 
       {/* ── STAT HOLIDAYS PANEL ── */}
-      <div className="rounded-lg border border-zinc-200 bg-white p-4 mt-1">
+      {!hideStatHolidays && <div className="rounded-lg border border-zinc-200 bg-white p-4 mt-1">
         <h3 className="text-sm font-semibold text-[#1A3560] mb-1">Statutory Holidays</h3>
         <p className="text-xs text-zinc-400 mb-3">Non-working days for all tasks — shown in red on the chart.</p>
         <div className="flex flex-col gap-1">
@@ -1468,7 +1533,7 @@ export default function MsProjectGantt({
             </button>
           </div>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

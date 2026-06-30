@@ -42,6 +42,15 @@ export interface Task {
   work_sat: boolean;
   work_sun: boolean;
   is_milestone: boolean;
+  subcontractor: string | null;
+  crew_size: number | null;
+}
+
+export interface MemberHoliday {
+  id: string;
+  user_id: string;
+  date: string;
+  label: string;
 }
 
 export interface StatHoliday {

@@ -3,7 +3,15 @@ import { createClient } from "@/lib/supabase/server";
 import { getOrCreateMasterProject } from "@/lib/actions/master";
 import MsProjectGantt from "@/components/gantt/MsProjectGantt";
 import type { Profile, Task, TaskDependency, TaskSupport } from "@/lib/supabase/types";
-import { addDays, formatISODate } from "@/lib/date";
+import { formatISODate, parseISODate, addDays } from "@/lib/date";
+
+function getMondayOfWeek(dateStr: string): string {
+  const d = parseISODate(dateStr);
+  const dow = d.getDay(); // 0 = Sun, 1 = Mon …
+  const daysToMonday = dow === 0 ? -6 : 1 - dow;
+  d.setDate(d.getDate() + daysToMonday);
+  return formatISODate(d);
+}
 
 export default async function LookaheadPage() {
   const supabase = await createClient();
@@ -19,15 +27,17 @@ export default async function LookaheadPage() {
     );
   }
 
-  const todayStr = formatISODate(new Date());
-  const sixWeeksStr = addDays(todayStr, 42);
+  const todayStr  = formatISODate(new Date());
+  const weekStart = getMondayOfWeek(todayStr);       // Monday of current week
+  const weekEnd   = addDays(weekStart, 41);           // Sunday 6 weeks later (6×7 − 1)
 
+  // Only tasks that overlap the 6-week window
   const { data: tasks } = await supabase
     .from("tasks")
-    .select("id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone")
+    .select("id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone, subcontractor, crew_size")
     .eq("project_id", master.id)
-    .lte("start_date", sixWeeksStr)
-    .gte("end_date", todayStr)
+    .lte("start_date", weekEnd)
+    .gte("end_date", weekStart)
     .order("sort_order", { ascending: true })
     .returns<Task[]>();
 
@@ -42,7 +52,7 @@ export default async function LookaheadPage() {
 
   const { data: profiles } = await supabase
     .from("profiles")
-    .select("id, email, full_name")
+    .select("id, email, full_name, is_admin")
     .returns<Profile[]>();
 
   return (
@@ -50,9 +60,8 @@ export default async function LookaheadPage() {
       <div className="flex flex-col gap-1">
         <h1 className="text-2xl font-bold text-[#1A3560]">6-Week Lookahead</h1>
         <p className="text-sm text-slate-500">
-          Upcoming work from the Master Schedule —{" "}
-          <span className="font-medium">{todayStr}</span> through{" "}
-          <span className="font-medium">{sixWeeksStr}</span>. Read-only view.
+          <span className="font-medium">{weekStart}</span> through{" "}
+          <span className="font-medium">{weekEnd}</span> — read-only view.
         </p>
       </div>
 
@@ -68,6 +77,8 @@ export default async function LookaheadPage() {
           initialSupport={rawSupport ?? []}
           members={profiles ?? []}
           readOnly
+          hideStatHolidays
+          printTitle="6-Week Lookahead"
         />
       )}
 

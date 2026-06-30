@@ -56,6 +56,9 @@ export default async function Header() {
               <Link href="/my-tasks" className="text-blue-100 hover:text-white transition-colors">
                 My Tasks
               </Link>
+              <Link href="/holidays" className="text-blue-100 hover:text-white transition-colors">
+                Holidays
+              </Link>
               <Link href="/sub-schedules" className="text-blue-100 hover:text-white transition-colors">
                 Sub-Schedules
               </Link>

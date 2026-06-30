@@ -21,7 +21,7 @@ export default async function MasterSchedulePage() {
   const [{ data: tasks }, { data: profiles }, { data: myProfile }] = await Promise.all([
     supabase
       .from("tasks")
-      .select("id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone")
+      .select("id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone, subcontractor, crew_size")
       .eq("project_id", master.id)
       .order("sort_order", { ascending: true })
       .returns<Task[]>(),
