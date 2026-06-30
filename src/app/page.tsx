@@ -16,22 +16,18 @@ export default async function Home() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-8 px-6 py-24 text-center">
       <Image
-        src="/logo-jv.jpg"
-        alt="Anmore Operations Yard Joint Venture"
+        src="/logo-jv.png"
+        alt="Anmore Operations Yard"
         width={120}
         height={120}
-        className="rounded-full shadow-lg"
+        className="object-contain shadow-lg"
       />
       <div className="flex flex-col gap-3">
         <h1 className="max-w-xl text-4xl font-bold tracking-tight text-[#1A3560]">
           Anmore Operations Yard
         </h1>
         <p className="text-lg font-medium text-[#2E6EA6]">
-          JB · VOA · ISL Joint Venture
-        </p>
-        <p className="max-w-md text-base text-slate-600 mt-1">
-          Collaborative project scheduling for the joint venture team — create
-          projects, assign tasks, and track progress on a shared Gantt chart.
+          Virtual Project Site
         </p>
       </div>
       <div className="flex gap-3">

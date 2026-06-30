@@ -2,12 +2,24 @@ import Image from "next/image";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { signOut } from "@/lib/actions/auth";
+import type { Profile } from "@/lib/supabase/types";
 
 export default async function Header() {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
+
+  const { data: profile } = user
+    ? await supabase
+        .from("profiles")
+        .select("id, email, full_name, is_admin")
+        .eq("id", user.id)
+        .maybeSingle()
+        .returns<Profile | null>()
+    : { data: null };
+
+  const isAdmin = profile?.is_admin ?? false;
 
   return (
     <header className="border-b border-[#0f2340] bg-[#1A3560]">
@@ -47,6 +59,11 @@ export default async function Header() {
               <Link href="/sub-schedules" className="text-blue-100 hover:text-white transition-colors">
                 Sub-Schedules
               </Link>
+              {isAdmin && (
+                <Link href="/admin" className="text-blue-300 hover:text-white transition-colors text-xs border border-blue-700 rounded px-2 py-1">
+                  Users
+                </Link>
+              )}
               <span className="text-blue-400 hidden sm:inline">{user.email}</span>
               <form action={signOut}>
                 <button

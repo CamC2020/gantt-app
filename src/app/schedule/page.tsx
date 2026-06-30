@@ -18,7 +18,7 @@ export default async function MasterSchedulePage() {
     );
   }
 
-  const [{ data: tasks }, { data: profiles }] = await Promise.all([
+  const [{ data: tasks }, { data: profiles }, { data: myProfile }] = await Promise.all([
     supabase
       .from("tasks")
       .select("id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone")
@@ -28,9 +28,18 @@ export default async function MasterSchedulePage() {
 
     supabase
       .from("profiles")
-      .select("id, email, full_name")
+      .select("id, email, full_name, is_admin")
       .returns<Profile[]>(),
+
+    supabase
+      .from("profiles")
+      .select("id, email, full_name, is_admin")
+      .eq("id", user.id)
+      .maybeSingle()
+      .returns<Profile | null>(),
   ]);
+
+  const isAdmin = myProfile?.is_admin ?? false;
 
   const taskIdList = (tasks ?? []).map(t => t.id);
 
@@ -50,12 +59,18 @@ export default async function MasterSchedulePage() {
         </p>
       </div>
 
+      {!isAdmin && (
+        <div className="rounded-md bg-amber-50 border border-amber-200 px-4 py-2 text-sm text-amber-800">
+          You are viewing the Master Schedule in read-only mode. Contact your administrator to make changes.
+        </div>
+      )}
       <MsProjectGantt
         projectId={master.id}
         initialTasks={tasks ?? []}
         initialDeps={rawDeps ?? []}
         initialSupport={rawSupport ?? []}
         members={profiles ?? []}
+        readOnly={!isAdmin}
       />
     </div>
   );

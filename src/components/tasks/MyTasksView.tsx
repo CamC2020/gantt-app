@@ -59,7 +59,7 @@ export default function MyTasksView({ tasks: initialTasks, userId }: Props) {
 
   async function updateStatus(taskId: string, status: TaskStatus) {
     setSavingStatus(taskId);
-    await supa.from("tasks").update({ status }).eq("id", taskId);
+    await supa.rpc("update_task_status", { p_task_id: taskId, p_status: status });
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status } : t));
     setSavingStatus(null);
   }
