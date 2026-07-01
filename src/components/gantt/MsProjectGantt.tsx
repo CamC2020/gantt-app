@@ -890,8 +890,17 @@ export default function MsProjectGantt({
   table { border-collapse: collapse; }
   td { border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
   .page-header { background: #1A3560 !important; padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
-  .page-footer { border-top: 1px solid #e2e8f0; padding: 18px 16px 6px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
-  .content { flex: 1; padding: 8px; overflow: hidden; }
+  .page-footer {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    border-top: 1px solid #e2e8f0;
+    padding: 6px 16px;
+    display: flex; align-items: center; gap: 16px;
+    background: #fff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .content { flex: 1; padding: 8px; padding-bottom: 60px; overflow: hidden; }
 </style>
 </head><body>
 
