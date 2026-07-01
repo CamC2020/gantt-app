@@ -79,6 +79,8 @@ export default async function LookaheadPage() {
           readOnly
           hideStatHolidays
           printTitle="6-Week Lookahead"
+          fixedStart={weekStart}
+          fixedEnd={weekEnd}
         />
       )}
 

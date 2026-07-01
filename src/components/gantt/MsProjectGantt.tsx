@@ -116,6 +116,7 @@ function buildChampionColorMap(members: Profile[]): Map<string, string> {
 export default function MsProjectGantt({
   projectId, initialTasks, initialDeps, initialSupport, members, readOnly = false,
   hideStatHolidays = false, printTitle = "Master Schedule",
+  fixedStart, fixedEnd,
 }: {
   projectId: string;
   initialTasks: Task[];
@@ -125,6 +126,8 @@ export default function MsProjectGantt({
   readOnly?: boolean;
   hideStatHolidays?: boolean;
   printTitle?: string;
+  fixedStart?: string;  // lock timeline to this start date (ISO)
+  fixedEnd?: string;    // lock timeline to this end date (ISO)
 }) {
   const router = useRouter();
   const supa   = useMemo(() => createClient(), []);
@@ -144,7 +147,11 @@ export default function MsProjectGantt({
   const [rowDragId,   setRowDragId]   = useState<string | null>(null);
   const [rowOverId,   setRowOverId]   = useState<string | null>(null);
   const [zoom,        setZoom]        = useState(1);
-  const DAY_W = Math.max(2, Math.round(BASE_DAY_W * zoom));
+  // In fixed-range mode, auto-fit day width so the full period fills the viewport width
+  const fixedDays = fixedStart && fixedEnd ? diffInDays(fixedStart, fixedEnd) + 1 : null;
+  const DAY_W = fixedDays
+    ? Math.max(2, Math.floor((typeof window !== "undefined" ? window.innerWidth - LEFT_W - 32 : 900) / fixedDays))
+    : Math.max(2, Math.round(BASE_DAY_W * zoom));
 
   useEffect(() => { supa.auth.getSession(); }, [supa]);
 
@@ -203,12 +210,16 @@ export default function MsProjectGantt({
 
   // ── Timeline ──────────────────────────────────────────────────────────────────
   const { rangeStart, totalDays } = useMemo(() => {
+    // Fixed range locks the chart to exactly the given window (e.g. 6-week lookahead)
+    if (fixedStart && fixedEnd) {
+      return { rangeStart: fixedStart, totalDays: diffInDays(fixedStart, fixedEnd) + 1 };
+    }
     const today = todayISO();
     if (!tasks.length) return { rangeStart: addDays(today, -14), totalDays: 90 };
     let min = tasks[0].start_date, max = tasks[0].end_date;
     for (const t of tasks) { if (t.start_date < min) min = t.start_date; if (t.end_date > max) max = t.end_date; }
     return { rangeStart: addDays(min, -14), totalDays: Math.max(diffInDays(addDays(min, -14), addDays(max, 21)) + 1, 90) };
-  }, [tasks]);
+  }, [tasks, fixedStart, fixedEnd]);
 
   const days = useMemo(() => {
     const today = todayISO(), out = [];
@@ -1434,28 +1445,30 @@ export default function MsProjectGantt({
           className="rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50">
           🖨 Print / PDF
         </button>
-        <div className="flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-1 py-1">
-          <button
-            onClick={() => setZoom(z => Math.max(ZOOM_MIN, +(z * 0.8).toFixed(3)))}
-            disabled={zoom <= ZOOM_MIN}
-            className="w-6 h-6 flex items-center justify-center text-sm font-bold text-zinc-600 hover:bg-zinc-100 rounded disabled:opacity-30"
-            title="Zoom out">
-            −
-          </button>
-          <span className="w-12 text-center text-[11px] text-zinc-500 tabular-nums">{Math.round(zoom * 100)}%</span>
-          <button
-            onClick={() => setZoom(z => Math.min(ZOOM_MAX, +(z / 0.8).toFixed(3)))}
-            disabled={zoom >= ZOOM_MAX}
-            className="w-6 h-6 flex items-center justify-center text-sm font-bold text-zinc-600 hover:bg-zinc-100 rounded disabled:opacity-30"
-            title="Zoom in">
-            +
-          </button>
-          {zoom !== 1 && (
-            <button onClick={() => setZoom(1)} className="ml-1 text-[10px] text-zinc-400 hover:text-zinc-700 px-1" title="Reset zoom">
-              Reset
+        {!fixedStart && (
+          <div className="flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-1 py-1">
+            <button
+              onClick={() => setZoom(z => Math.max(ZOOM_MIN, +(z * 0.8).toFixed(3)))}
+              disabled={zoom <= ZOOM_MIN}
+              className="w-6 h-6 flex items-center justify-center text-sm font-bold text-zinc-600 hover:bg-zinc-100 rounded disabled:opacity-30"
+              title="Zoom out">
+              −
             </button>
-          )}
-        </div>
+            <span className="w-12 text-center text-[11px] text-zinc-500 tabular-nums">{Math.round(zoom * 100)}%</span>
+            <button
+              onClick={() => setZoom(z => Math.min(ZOOM_MAX, +(z / 0.8).toFixed(3)))}
+              disabled={zoom >= ZOOM_MAX}
+              className="w-6 h-6 flex items-center justify-center text-sm font-bold text-zinc-600 hover:bg-zinc-100 rounded disabled:opacity-30"
+              title="Zoom in">
+              +
+            </button>
+            {zoom !== 1 && (
+              <button onClick={() => setZoom(1)} className="ml-1 text-[10px] text-zinc-400 hover:text-zinc-700 px-1" title="Reset zoom">
+                Reset
+              </button>
+            )}
+          </div>
+        )}
         {!readOnly && (
           <p className="text-xs text-zinc-400">
             Double-click Name, Start, Finish, Days, or Pred. to edit · Drag bar to move or resize · Sat/Sun = weekend working days
