@@ -16,8 +16,8 @@ export default async function HolidaysPage() {
       .returns<Profile[]>(),
     supabase
       .from("member_holidays")
-      .select("id, user_id, date, label")
-      .order("date", { ascending: true })
+      .select("id, user_id, start_date, end_date, label")
+      .order("start_date", { ascending: true })
       .returns<MemberHoliday[]>(),
   ]);
 

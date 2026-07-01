@@ -49,7 +49,8 @@ export interface Task {
 export interface MemberHoliday {
   id: string;
   user_id: string;
-  date: string;
+  start_date: string;
+  end_date: string;
   label: string;
 }
 
