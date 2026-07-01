@@ -762,6 +762,33 @@ export default function MsProjectGantt({
     // Horizontal row lines
     for (let i = 1; i < all.length; i++) barsSVG += `<line x1="0" y1="${i * R}" x2="${pDays * D}" y2="${i * R}" stroke="#f1f5f9" stroke-width="0.5"/>`;
 
+    // Dependency arrows
+    const idxMap = new Map(all.map((t, i) => [t.id, i]));
+    let arrowsSVG = `<defs><marker id="ph" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L5,3 L0,6 Z" fill="#94a3b8"/></marker></defs>`;
+    for (const dep of deps) {
+      const predIdx = idxMap.get(dep.predecessor_id);
+      const succIdx = idxMap.get(dep.task_id);
+      if (predIdx === undefined || succIdx === undefined) continue;
+      const predTask = all[predIdx], succTask = all[succIdx];
+      const predHasKids = (cm.get(predTask.id) ?? []).length > 0;
+      const succHasKids = (cm.get(succTask.id) ?? []).length > 0;
+      const x1 = (diffInDays(pStart, predTask.end_date) + 1) * D;
+      const x2 = diffInDays(pStart, succTask.start_date) * D;
+      const y1 = predIdx * R + R / 2;
+      const y2 = succIdx * R + R / 2;
+      const midX = (x1 + x2) / 2;
+      const barHalf = predHasKids ? 4 : 8;
+      const succBarHalf = succHasKids ? 4 : 8;
+      let d: string;
+      if (Math.abs(y1 - y2) < 2) {
+        d = `M ${x1} ${y1} H ${x2}`;
+      } else {
+        const entryY = succIdx > predIdx ? y2 - (succBarHalf + 3) : y2 + (succBarHalf + 3);
+        d = `M ${x1} ${y1} H ${midX} V ${entryY} H ${x2} V ${y2}`;
+      }
+      arrowsSVG += `<path d="${d}" fill="none" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#ph)"/>`;
+    }
+
     // Table rows
     let tableRows = "";
     all.forEach((task, idx) => {
@@ -901,7 +928,7 @@ export default function MsProjectGantt({
     <!-- Right: Gantt chart -->
     <div style="position:relative;overflow:hidden;flex:1">
       <div style="position:relative;height:${HEAD}px;background:#f8fafc;border-bottom:2px solid #1A3560">${monthHeader}${subHeader}</div>
-      <svg width="${chartW}" height="${chartH}" style="display:block">${bgSVG}${barsSVG}</svg>
+      <svg width="${chartW}" height="${chartH}" style="display:block">${bgSVG}${barsSVG}${arrowsSVG}</svg>
     </div>
   </div>
 </div>
