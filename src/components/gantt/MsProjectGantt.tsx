@@ -1011,7 +1011,7 @@ export default function MsProjectGantt({
 
           {/* ── HEADER ── */}
           <div className="sticky top-0 z-20 flex border-b-2 border-zinc-300">
-            <div className="sticky left-0 z-30 flex shrink-0 border-r-2 border-zinc-300 bg-[#1A3560]" style={{ width: leftW }}>
+            <div className="sticky left-0 z-30 flex shrink-0 border-r-2 border-zinc-300 bg-[#1A3560] overflow-hidden" style={{ width: leftW }}>
               <div style={{ width: COL.toggle }} />
               <H w={COL.wbs}>#</H>
               <H w={COL.name}>Task Name</H>
@@ -1134,7 +1134,7 @@ export default function MsProjectGantt({
 
                 {/* ── LEFT PANEL ── */}
                 <div
-                  className="sticky left-0 z-20 flex shrink-0 items-center border-r border-zinc-200"
+                  className="sticky left-0 z-20 flex shrink-0 items-center border-r border-zinc-200 overflow-hidden"
                   style={{ width: leftW, backgroundColor: rowBg }}>
 
                   {/* Toggle / drag grip */}
