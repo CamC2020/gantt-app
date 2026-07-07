@@ -1003,7 +1003,7 @@ export default function MsProjectGantt({
             resizingRef.current = false;
             (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
           } else {
-            onUp(e);
+            onUp();
           }
         }}
       >
