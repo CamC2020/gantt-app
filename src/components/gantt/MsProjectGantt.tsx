@@ -14,7 +14,7 @@ const ZOOM_MAX = 3;
 const ROW_H = 36;
 const HEADER_H = 54; // month row (24px) + day row (28px) + 2px border
 const COL = {
-  toggle: 26, wbs: 50, name: 180, dur: 52,
+  toggle: 26, wbs: 72, name: 180, dur: 52,
   start: 80, end: 80, pred: 60, lag: 44,
   champ: 110, supp: 120, sat: 34, sun: 34,
   sub: 100, crew: 50, dtc: 46,
@@ -1160,7 +1160,7 @@ export default function MsProjectGantt({
                   </div>
 
                   {/* WBS */}
-                  <div className="shrink-0 text-[11px] text-zinc-400 font-mono px-1" style={{ width: COL.wbs }}>{wbs}</div>
+                  <div className="shrink-0 text-[11px] text-zinc-400 font-mono px-1 overflow-hidden truncate" style={{ width: COL.wbs }}>{wbs}</div>
 
                   {/* Name */}
                   <div className="shrink-0 flex items-center overflow-hidden pr-1" style={{ width: COL.name, paddingLeft: 8 + lvl * 14 }}>
