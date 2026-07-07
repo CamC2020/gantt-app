@@ -147,10 +147,16 @@ export default function MsProjectGantt({
   const [rowDragId,   setRowDragId]   = useState<string | null>(null);
   const [rowOverId,   setRowOverId]   = useState<string | null>(null);
   const [zoom,        setZoom]        = useState(1);
+  const [leftW,       setLeftW]       = useState(LEFT_W);
+  const resizingRef = useRef(false);
+  const resizeStartX = useRef(0);
+  const resizeStartW = useRef(LEFT_W);
+  const MIN_LEFT_W = 180;
+
   // In fixed-range mode, auto-fit day width so the full period fills the viewport width
   const fixedDays = fixedStart && fixedEnd ? diffInDays(fixedStart, fixedEnd) + 1 : null;
   const DAY_W = fixedDays
-    ? Math.max(2, Math.floor((typeof window !== "undefined" ? window.innerWidth - LEFT_W - 32 : 900) / fixedDays))
+    ? Math.max(2, Math.floor((typeof window !== "undefined" ? window.innerWidth - leftW - 32 : 900) / fixedDays))
     : Math.max(2, Math.round(BASE_DAY_W * zoom));
 
   useEffect(() => { supa.auth.getSession(); }, [supa]);
@@ -984,14 +990,28 @@ export default function MsProjectGantt({
       <div
         className="relative overflow-x-auto overflow-y-auto rounded-lg border border-zinc-300 bg-white"
         style={{ maxHeight: "70vh" }}
-        onPointerMove={onMove}
-        onPointerUp={onUp}
+        onPointerMove={e => {
+          if (resizingRef.current) {
+            const delta = e.clientX - resizeStartX.current;
+            setLeftW(Math.max(MIN_LEFT_W, resizeStartW.current + delta));
+          } else {
+            onMove(e);
+          }
+        }}
+        onPointerUp={e => {
+          if (resizingRef.current) {
+            resizingRef.current = false;
+            (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+          } else {
+            onUp(e);
+          }
+        }}
       >
-        <div className="relative" style={{ width: LEFT_W + chartW }}>
+        <div className="relative" style={{ width: leftW + chartW }}>
 
           {/* ── HEADER ── */}
           <div className="sticky top-0 z-20 flex border-b-2 border-zinc-300">
-            <div className="sticky left-0 z-30 flex shrink-0 border-r-2 border-zinc-300 bg-[#1A3560]" style={{ width: LEFT_W }}>
+            <div className="sticky left-0 z-30 flex shrink-0 border-r-2 border-zinc-300 bg-[#1A3560]" style={{ width: leftW }}>
               <div style={{ width: COL.toggle }} />
               <H w={COL.wbs}>#</H>
               <H w={COL.name}>Task Name</H>
@@ -1009,6 +1029,28 @@ export default function MsProjectGantt({
               <H w={COL.dtc} center title="Working days remaining to end date">DTC</H>
               <H w={COL.act} center />
             </div>
+            {/* ── DRAG HANDLE ── */}
+            <div
+              className="sticky z-40 w-1.5 shrink-0 cursor-col-resize bg-zinc-300 hover:bg-[#2E6EA6] active:bg-[#2E6EA6] transition-colors self-stretch"
+              style={{ left: leftW }}
+              onPointerDown={e => {
+                resizingRef.current = true;
+                resizeStartX.current = e.clientX;
+                resizeStartW.current = leftW;
+                e.currentTarget.setPointerCapture(e.pointerId);
+                e.preventDefault();
+              }}
+              onPointerMove={e => {
+                if (!resizingRef.current) return;
+                const delta = e.clientX - resizeStartX.current;
+                setLeftW(Math.max(MIN_LEFT_W, resizeStartW.current + delta));
+              }}
+              onPointerUp={e => {
+                if (!resizingRef.current) return;
+                resizingRef.current = false;
+                e.currentTarget.releasePointerCapture(e.pointerId);
+              }}
+            />
             <div className="flex flex-col bg-zinc-50 shrink-0" style={{ width: chartW }}>
               <div className="relative h-6 border-b border-zinc-200">
                 {monthLabels.map(m => (
@@ -1093,7 +1135,7 @@ export default function MsProjectGantt({
                 {/* ── LEFT PANEL ── */}
                 <div
                   className="sticky left-0 z-20 flex shrink-0 items-center border-r border-zinc-200"
-                  style={{ width: LEFT_W, backgroundColor: rowBg }}>
+                  style={{ width: leftW, backgroundColor: rowBg }}>
 
                   {/* Toggle / drag grip */}
                   <div
@@ -1453,7 +1495,7 @@ export default function MsProjectGantt({
             return (
               <svg
                 className="absolute pointer-events-none z-0"
-                style={{ left: LEFT_W, top: HEADER_H, width: chartW, height: flat.length * ROW_H }}
+                style={{ left: leftW, top: HEADER_H, width: chartW, height: flat.length * ROW_H }}
               >
                 <defs>
                   <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
