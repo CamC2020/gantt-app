@@ -1031,8 +1031,8 @@ export default function MsProjectGantt({
             </div>
             {/* ── DRAG HANDLE ── */}
             <div
-              className="sticky z-40 w-1.5 shrink-0 cursor-col-resize bg-zinc-300 hover:bg-[#2E6EA6] active:bg-[#2E6EA6] transition-colors self-stretch"
-              style={{ left: leftW }}
+              className="z-40 w-2 shrink-0 cursor-col-resize bg-zinc-400 hover:bg-[#2E6EA6] active:bg-[#2E6EA6] transition-colors self-stretch"
+              title="Drag to resize"
               onPointerDown={e => {
                 resizingRef.current = true;
                 resizeStartX.current = e.clientX;
