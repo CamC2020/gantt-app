@@ -7,7 +7,7 @@ import type {
   PullRole, PullTicketDep, PullLocation, PullMilestoneLink,
 } from "@/lib/supabase/types";
 import { addDays, diffInDays, formatISODate, parseISODate, todayISO } from "@/lib/date";
-import TicketCard, { TICKET_H, ticketEnd } from "./TicketCard";
+import TicketCard, { ticketEnd } from "./TicketCard";
 import TicketModal from "./TicketModal";
 import {
   IconRail, PanelShell, RolesPanel, LocationsPanel, MembersPanel,
@@ -102,6 +102,7 @@ export default function PullPlanBoard({
   // ── Timeline geometry ───────────────────────────────────────────────────────
   const dayW = Math.round(BASE_DAY_W * zoom);
   const weekW = Math.round(BASE_WEEK_W * zoom);
+  const ticketH = Math.max(32, Math.round(78 * zoom)); // ticket height scales with zoom
   // Active zone starts at least 2 weeks before the active line, extended back
   // to the earliest placed ticket so nothing is cut off.
   const earliestStart = tickets.reduce<string | null>(
@@ -173,12 +174,12 @@ export default function PullPlanBoard({
       const list = tickets.filter(t => t.lane_id === lane.id && t.start_date);
       const maxRow = list.reduce((m, t) => Math.max(m, t.row_index), 0);
       const rows = Math.max(2, maxRow + 2); // spare row at the bottom for dropping
-      const height = rows * (TICKET_H + LANE_PAD) + LANE_PAD;
+      const height = rows * (ticketH + LANE_PAD) + LANE_PAD;
       const layout = { lane, list, rows, height, top, tints: LANE_TINTS[idx % LANE_TINTS.length] };
       top += height;
       return layout;
     });
-  }, [lanes, tickets]);
+  }, [lanes, tickets, ticketH]);
   const lanesH = laneLayouts.reduce((a, l) => a + l.height, 0);
 
   const ticketPos = useMemo(() => {
@@ -187,7 +188,7 @@ export default function PullPlanBoard({
       for (const t of ll.list) {
         m.set(t.id, {
           x: xForDate(t.start_date!) + 2,
-          y: ll.top + LANE_PAD + t.row_index * (TICKET_H + LANE_PAD),
+          y: ll.top + LANE_PAD + t.row_index * (ticketH + LANE_PAD),
           w: widthForTicket(t),
           laneTop: ll.top,
         });
@@ -414,7 +415,7 @@ export default function PullPlanBoard({
       const laneY = p.y - HEADER_H; // pointer position within the lanes area
       const ll = laneLayouts.find(l => laneY >= l.top && laneY < l.top + l.height);
       if (!ll) return;
-      const row = Math.min(ll.rows - 1, Math.max(0, Math.floor((laneY - ll.top - LANE_PAD) / (TICKET_H + LANE_PAD))));
+      const row = Math.min(ll.rows - 1, Math.max(0, Math.floor((laneY - ll.top - LANE_PAD) / (ticketH + LANE_PAD))));
       const date = dateForX(Math.max(0, dropX));
       await patchTicket(t.id, { lane_id: ll.lane.id, start_date: date, row_index: row });
     };
@@ -488,7 +489,7 @@ export default function PullPlanBoard({
     const rect = boardRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top - HEADER_H;
-    const row = Math.max(0, Math.floor((y - laneTop - LANE_PAD) / (TICKET_H + LANE_PAD)));
+    const row = Math.max(0, Math.floor((y - laneTop - LANE_PAD) / (ticketH + LANE_PAD)));
     await createTicket({ lane_id: laneId, start_date: dateForX(x), row_index: row });
   }
 
@@ -690,7 +691,7 @@ export default function PullPlanBoard({
               return (
                 <div key={t.id}
                   className={`absolute ${dragging ? "z-40 opacity-80" : "z-10"} ${canEdit(t) ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"}`}
-                  style={{ left, top, width: pos.w }}
+                  style={{ left, top, width: pos.w, touchAction: "none" }}
                   onPointerDown={e => {
                     if ((e.target as HTMLElement).dataset.resize) return;
                     if (canEdit(t) && !t.status.startsWith("done_")) {
@@ -703,7 +704,7 @@ export default function PullPlanBoard({
                   <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
                     location={t.location_id ? locMap.get(t.location_id) : undefined}
                     responsible={memberMap.get(t.responsible_id ?? t.owner_id)}
-                    width={pos.w} hid={isHid(t)}
+                    width={pos.w} height={ticketH} hid={isHid(t)}
                     connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id}
                     outOfSeq={outOfSeqIds.has(t.id)}
                     onToggleWeekend={canEdit(t) ? dow => patchTicket(t.id, dow === 6 ? { work_sat: !t.work_sat } : { work_sun: !t.work_sun }) : undefined} />
@@ -735,8 +736,8 @@ export default function PullPlanBoard({
                   const pred = ticketMap.get(dep.predecessor_id);
                   const succ = ticketMap.get(dep.ticket_id);
                   const bad = !!(pred?.start_date && succ?.start_date && succ.start_date <= ticketEnd(pred)!);
-                  const x1 = from.x + from.w, y1 = from.y + TICKET_H / 2;
-                  const x2 = to.x, y2 = to.y + TICKET_H / 2;
+                  const x1 = from.x + from.w, y1 = from.y + ticketH / 2;
+                  const x2 = to.x, y2 = to.y + ticketH / 2;
                   const c = Math.max(16, Math.min(50, (x2 - x1) / 2));
                   const d = `M ${x1} ${y1} C ${x1 + c} ${y1}, ${x2 - c} ${y2}, ${x2 - 2} ${y2}`;
                   return (
@@ -759,11 +760,11 @@ export default function PullPlanBoard({
                     (l.ticket_is_pred ? ticketEnd(t)! >= m.date : t.start_date! <= m.date);
                   let x1: number, y1: number, x2: number, y2: number;
                   if (l.ticket_is_pred) {
-                    x1 = tp.x + tp.w; y1 = tp.y + TICKET_H / 2;
+                    x1 = tp.x + tp.w; y1 = tp.y + ticketH / 2;
                     x2 = mx - 30; y2 = my;
                   } else {
                     x1 = mx + 30; y1 = my;
-                    x2 = tp.x; y2 = tp.y + TICKET_H / 2;
+                    x2 = tp.x; y2 = tp.y + ticketH / 2;
                   }
                   const c = Math.max(16, Math.min(50, (x2 - x1) / 2));
                   const d = `M ${x1} ${y1} C ${x1 + c} ${y1}, ${x2 - c} ${y2}, ${x2 - 2} ${y2}`;

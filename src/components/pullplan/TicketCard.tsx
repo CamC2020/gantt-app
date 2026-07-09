@@ -34,7 +34,7 @@ function fmtShort(iso: string) {
 }
 
 export default function TicketCard({
-  t, role, location, responsible, width, hid = false, connectFrom = false, compact = false,
+  t, role, location, responsible, width, height, hid = false, connectFrom = false, compact = false,
   outOfSeq = false, onToggleWeekend,
 }: {
   t: PullTicket;
@@ -42,6 +42,7 @@ export default function TicketCard({
   location: PullLocation | undefined;
   responsible: Profile | undefined;
   width?: number;
+  height?: number;        // zoom-scaled ticket height
   hid?: boolean;          // filtered out — render grayed "(hid)" style
   connectFrom?: boolean;  // highlighted as the source in connect mode
   compact?: boolean;      // tray rendering
@@ -66,14 +67,15 @@ export default function TicketCard({
       spanDays.push({ date: d, dow, working });
     }
   }
-  const showBoxes = spanDays.length > 1 && (width ?? 0) >= 40;
+  const showBoxes = spanDays.length > 1 && (width ?? 0) >= 40 && spanDays.some(d => d.dow === 0 || d.dow === 6);
+  const h = compact ? 74 : height ?? TICKET_H;
 
   return (
     <div
       className="flex h-full select-none flex-col overflow-visible rounded-[2px]"
       style={{
         width: width ?? (compact ? 130 : undefined),
-        height: compact ? 74 : TICKET_H,
+        height: h,
         backgroundColor: bodyColor,
         boxShadow: connectFrom
           ? "0 0 0 3px #1A3560, 0 2px 5px rgba(0,0,0,.3)"
@@ -104,7 +106,10 @@ export default function TicketCard({
               style={{
                 flex: 1,
                 borderRadius: 1,
-                backgroundColor: d.working ? (hid ? "#9aa2ab" : "#16a34a") : "rgba(0,0,0,.18)",
+                // Boxes only appear over weekend days; weekday slots stay invisible
+                backgroundColor: d.dow === 0 || d.dow === 6
+                  ? (d.working ? (hid ? "#9aa2ab" : "#16a34a") : "rgba(0,0,0,.28)")
+                  : "transparent",
                 border: d.dow === 0 || d.dow === 6 ? "1px solid rgba(0,0,0,.3)" : "none",
               }} />
           ))}
@@ -134,8 +139,8 @@ export default function TicketCard({
         </span>
       </div>
 
-      {/* Date line */}
-      {t.start_date && !compact && (
+      {/* Date line (hidden when zoomed out small) */}
+      {t.start_date && !compact && h >= 58 && (
         <div className="px-1 pt-px text-[8px] font-semibold leading-tight text-black/60">
           {fmtShort(t.start_date)}{end && end !== t.start_date ? ` – ${fmtShort(end)}` : ""}
         </div>
@@ -147,11 +152,13 @@ export default function TicketCard({
         {t.description}
       </div>
 
-      {/* Footer: crew | duration */}
+      {/* Footer: crew | duration (hidden when zoomed out small) */}
+      {(compact || h >= 46) && (
       <div className="flex shrink-0 items-center justify-between px-1 pb-0.5 text-[9px] font-bold text-white/90">
         <span title="Crew size">{t.crew_size != null ? <>👥 {t.crew_size}</> : respName}</span>
         <span title="Duration (days)">🕐 {t.duration}</span>
       </div>
+      )}
     </div>
   );
 }
