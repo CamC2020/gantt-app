@@ -63,6 +63,37 @@ export interface TaskSupport {
   user_id: string;
 }
 
+export type PullTicketStatus =
+  | "planned" | "promised" | "in_progress"
+  | "done_early" | "done_ontime" | "done_late";
+
+export interface PullLane {
+  id: string;
+  name: string;
+  sort_order: number;
+}
+
+export interface PullTicket {
+  id: string;
+  lane_id: string | null;
+  owner_id: string;
+  description: string;
+  start_date: string | null;
+  duration: number;
+  crew_size: number | null;
+  status: PullTicketStatus;
+  roadblock: boolean;
+  roadblock_note: string;
+  promised_end: string | null;
+  sort_order: number;
+}
+
+export interface PullMilestone {
+  id: string;
+  label: string;
+  date: string;
+}
+
 export type ReminderType = "5_day" | "1_day";
 
 export interface TaskNote {

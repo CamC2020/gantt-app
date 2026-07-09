@@ -53,6 +53,9 @@ export default async function Header() {
               <Link href="/lookahead" className="text-blue-100 hover:text-white transition-colors">
                 Lookahead
               </Link>
+              <Link href="/pullplan" className="text-blue-100 hover:text-white transition-colors">
+                Pull Plan
+              </Link>
               <Link href="/my-tasks" className="text-blue-100 hover:text-white transition-colors">
                 My Tasks
               </Link>

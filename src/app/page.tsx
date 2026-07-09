@@ -18,6 +18,13 @@ const NAV_CARDS = [
     color: "border-[#2E6EA6]",
   },
   {
+    href: "/pullplan",
+    title: "Pull Plan",
+    description: "Collaborative sticky-note pull planning board.",
+    icon: "🗒️",
+    color: "border-yellow-500",
+  },
+  {
     href: "/my-tasks",
     title: "My Tasks",
     description: "Tasks assigned to you with status and notes.",
