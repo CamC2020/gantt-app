@@ -68,7 +68,13 @@ export default function TicketCard({
       spanDays.push({ date: d, dow, working });
     }
   }
-  const showBoxes = spanDays.length > 1 && (width ?? 0) >= 40 && !!dayW && spanDays.some(d => d.dow === 0 || d.dow === 6);
+  // Clip the box count to the ticket's own rendered width — a ticket's bar is
+  // visually clipped at the active line even though its real duration runs
+  // longer, and the box strip must stop there too instead of overflowing into
+  // the inactive zone.
+  const visibleDays = dayW ? Math.min(spanDays.length, Math.max(0, Math.floor((width ?? 0) / dayW))) : 0;
+  const boxDays = spanDays.slice(0, visibleDays);
+  const showBoxes = boxDays.length > 1 && (width ?? 0) >= 40 && !!dayW && boxDays.some(d => d.dow === 0 || d.dow === 6);
   const h = height ?? (compact ? 74 : TICKET_H);
 
   // Text scales with the card's height so it stays readable at any zoom level.
@@ -98,8 +104,8 @@ export default function TicketCard({
           grid (dayW), not stretched evenly, so boxes land exactly over their day
           regardless of the ticket's own rendered width/margins. */}
       {showBoxes && (
-        <div className="absolute -top-[7px] left-0" style={{ height: 5, width: spanDays.length * dayW! }}>
-          {spanDays.map((d, i) => (
+        <div className="absolute -top-[7px] left-0" style={{ height: 5, width: boxDays.length * dayW! }}>
+          {boxDays.map((d, i) => (
             <div key={d.date}
               className={`absolute ${d.dow === 0 || d.dow === 6 ? "cursor-pointer" : ""}`}
               title={d.dow === 6 ? `Saturday — ${d.working ? "workday (click to remove)" : "not a workday (click to work it)"}`
