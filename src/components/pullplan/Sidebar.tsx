@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { Profile, PullRole, PullLocation, PullTicket } from "@/lib/supabase/types";
 
-export type PanelId = "constraints" | "members" | "roles" | "locations" | "filters" | "overview" | null;
+export type PanelId = "constraints" | "members" | "roles" | "locations" | "snapshots" | "filters" | "overview" | null;
 
 export const ROLE_COLORS = [
   "#3ec66d", "#f07f4e", "#8f5bd9", "#4a90e2", "#39c2c9",
@@ -15,6 +15,7 @@ const ITEMS: { id: Exclude<PanelId, null>; icon: string; label: string }[] = [
   { id: "members",     icon: "👤", label: "Members" },
   { id: "roles",       icon: "🎨", label: "Roles" },
   { id: "locations",   icon: "📍", label: "Locations" },
+  { id: "snapshots",   icon: "📷", label: "Snapshots" },
   { id: "filters",     icon: "🔍", label: "Filters" },
   { id: "overview",    icon: "📊", label: "Overview" },
 ];
@@ -167,6 +168,65 @@ export function ConstraintsPanel({ tickets, onOpen }: { tickets: PullTicket[]; o
           </button>
         );
       })}
+    </div>
+  );
+}
+
+export function SnapshotsPanel({ snapshots, members, isAdmin, currentUserId, busy, onTake, onRestore, onDelete }: {
+  snapshots: { id: string; name: string; created_by: string; created_at: string }[];
+  members: Profile[];
+  isAdmin: boolean;
+  currentUserId: string;
+  busy: boolean;
+  onTake: (name: string) => void;
+  onRestore: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const memberMap = new Map(members.map(m => [m.id, m]));
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2 border-b border-zinc-100 pb-3">
+        <input value={name} onChange={e => setName(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && name.trim() && !busy) { onTake(name.trim()); setName(""); } }}
+          placeholder="Snapshot name (e.g. Before re-sequence)"
+          className="rounded border border-zinc-300 px-2 py-1.5 text-xs outline-none focus:border-[#2E6EA6]" />
+        <button onClick={() => { if (name.trim()) { onTake(name.trim()); setName(""); } }} disabled={busy || !name.trim()}
+          className="rounded bg-[#1A3560] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40">
+          {busy ? "Working…" : "📷 Take Snapshot"}
+        </button>
+        <p className="text-[10px] text-zinc-400">Saves a copy of the whole board. {isAdmin ? "Restoring replaces the current board." : "Only admins can restore."}</p>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {snapshots.length === 0 && <span className="text-xs italic text-zinc-400">No snapshots yet.</span>}
+        {snapshots.map(s => {
+          const author = memberMap.get(s.created_by);
+          const canDelete = isAdmin || s.created_by === currentUserId;
+          return (
+            <div key={s.id} className="rounded border border-zinc-200 px-2 py-1.5">
+              <div className="text-xs font-semibold text-zinc-800">{s.name}</div>
+              <div className="text-[10px] text-zinc-400">
+                {new Date(s.created_at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                {author && <> · {author.full_name?.split(" ")[0] || author.email.split("@")[0]}</>}
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                {isAdmin && (
+                  <button onClick={() => onRestore(s.id)} disabled={busy}
+                    className="rounded bg-[#2E6EA6] px-2 py-0.5 text-[10px] font-semibold text-white disabled:opacity-40">
+                    Restore
+                  </button>
+                )}
+                {canDelete && (
+                  <button onClick={() => onDelete(s.id)} disabled={busy}
+                    className="text-[10px] text-red-400 hover:text-red-600 disabled:opacity-40">
+                    Delete
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

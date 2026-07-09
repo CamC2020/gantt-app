@@ -4,14 +4,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type {
   Profile, PullLane, PullTicket, PullMilestone, PullTicketStatus,
-  PullRole, PullTicketDep, PullLocation, PullMilestoneLink,
+  PullRole, PullTicketDep, PullLocation, PullMilestoneLink, PullSnapshot, PullSnapshotData,
 } from "@/lib/supabase/types";
 import { addDays, diffInDays, formatISODate, parseISODate, todayISO } from "@/lib/date";
 import TicketCard, { ticketEnd } from "./TicketCard";
 import TicketModal from "./TicketModal";
 import {
   IconRail, PanelShell, RolesPanel, LocationsPanel, MembersPanel,
-  ConstraintsPanel, FilterPanel, OverviewPanel,
+  ConstraintsPanel, FilterPanel, OverviewPanel, SnapshotsPanel,
   type PanelId, type Filters,
 } from "./Sidebar";
 
@@ -53,7 +53,7 @@ type DragMode =
 
 export default function PullPlanBoard({
   initialLanes, initialTickets, initialMilestones, initialRoles, initialDeps,
-  initialMsLinks = [], initialLocations, initialActiveDate, members, currentUserId, isAdmin,
+  initialMsLinks = [], initialLocations, initialSnapshots = [], initialActiveDate, members, currentUserId, isAdmin,
 }: {
   initialLanes: PullLane[];
   initialTickets: PullTicket[];
@@ -62,6 +62,7 @@ export default function PullPlanBoard({
   initialDeps: PullTicketDep[];
   initialMsLinks?: PullMilestoneLink[];
   initialLocations: PullLocation[];
+  initialSnapshots?: PullSnapshot[];
   initialActiveDate: string | null;
   members: Profile[];
   currentUserId: string;
@@ -74,6 +75,8 @@ export default function PullPlanBoard({
   const [locations, setLocations] = useState<PullLocation[]>(initialLocations);
   const [deps, setDeps] = useState<PullTicketDep[]>(initialDeps);
   const [msLinks, setMsLinks] = useState<PullMilestoneLink[]>(initialMsLinks);
+  const [snapshots, setSnapshots] = useState<PullSnapshot[]>(initialSnapshots);
+  const [snapBusy, setSnapBusy] = useState(false);
   const [activeDate, setActiveDate] = useState<string>(initialActiveDate ?? todayISO());
   const [zoom, setZoom] = useState(1);
   const [panel, setPanel] = useState<PanelId>(null);
@@ -358,6 +361,88 @@ export default function PullPlanBoard({
     await supa.from("pull_settings").update({ active_date: d }).eq("id", 1);
   }
 
+  // ── Snapshots ───────────────────────────────────────────────────────────────
+  async function takeSnapshot(name: string) {
+    setSnapBusy(true);
+    const data: PullSnapshotData = { lanes, tickets, milestones, deps, msLinks, active_date: activeDate };
+    const { data: row, error: err } = await supa.from("pull_snapshots")
+      .insert({ name, created_by: currentUserId, data })
+      .select("id, name, created_by, data, created_at").single();
+    if (err) setError(err.message);
+    else if (row) setSnapshots(prev => [row as PullSnapshot, ...prev]);
+    setSnapBusy(false);
+  }
+
+  const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
+
+  async function restoreSnapshot(id: string) {
+    const snap = snapshots.find(s => s.id === id);
+    if (!snap) return;
+    if (!confirm(`Restore snapshot “${snap.name}”? This REPLACES the entire current board.`)) return;
+    setSnapBusy(true);
+    try {
+      const d = snap.data;
+      // Wipe current board (children first for FK order)
+      let err =
+        (await supa.from("pull_milestone_links").delete().neq("ticket_id", ZERO_UUID)).error ||
+        (await supa.from("pull_ticket_deps").delete().neq("ticket_id", ZERO_UUID)).error ||
+        (await supa.from("pull_tickets").delete().neq("id", ZERO_UUID)).error ||
+        (await supa.from("pull_milestones").delete().neq("id", ZERO_UUID)).error ||
+        (await supa.from("pull_lanes").delete().neq("id", ZERO_UUID)).error;
+      if (err) throw err;
+
+      // Re-insert, nulling references to roles/locations/members that no longer exist
+      const roleIds = new Set(roles.map(r => r.id));
+      const locIds = new Set(locations.map(l => l.id));
+      const memberIds = new Set(members.map(m => m.id));
+      const cleanTickets = d.tickets.map(t => ({
+        ...t,
+        role_id: t.role_id && roleIds.has(t.role_id) ? t.role_id : null,
+        location_id: t.location_id && locIds.has(t.location_id) ? t.location_id : null,
+        responsible_id: t.responsible_id && memberIds.has(t.responsible_id) ? t.responsible_id : null,
+        owner_id: memberIds.has(t.owner_id) ? t.owner_id : currentUserId,
+      }));
+
+      if (d.lanes.length) { err = (await supa.from("pull_lanes").insert(d.lanes)).error; if (err) throw err; }
+      if (d.milestones.length) { err = (await supa.from("pull_milestones").insert(d.milestones)).error; if (err) throw err; }
+      if (cleanTickets.length) { err = (await supa.from("pull_tickets").insert(cleanTickets)).error; if (err) throw err; }
+      if (d.deps.length) { err = (await supa.from("pull_ticket_deps").insert(d.deps)).error; if (err) throw err; }
+      if (d.msLinks.length) { err = (await supa.from("pull_milestone_links").insert(d.msLinks)).error; if (err) throw err; }
+      await supa.from("pull_settings").update({ active_date: d.active_date }).eq("id", 1);
+
+      setLanes(d.lanes);
+      setMilestones(d.milestones);
+      setTickets(cleanTickets);
+      setDeps(d.deps);
+      setMsLinks(d.msLinks);
+      setActiveDate(d.active_date);
+      setEditing(null);
+    } catch (e) {
+      setError(`Restore failed: ${(e as { message?: string }).message ?? String(e)}. Reload the page before continuing.`);
+    }
+    setSnapBusy(false);
+  }
+
+  async function deleteSnapshot(id: string) {
+    if (!confirm("Delete this snapshot?")) return;
+    setSnapshots(prev => prev.filter(s => s.id !== id));
+    await supa.from("pull_snapshots").delete().eq("id", id);
+  }
+
+  // ── Promise Now: bulk-promise all planned tickets in the next period ───────
+  const promiseNowEnd = addDays(activeDate, 7);
+  const promiseNowTargets = tickets.filter(
+    t => t.status === "planned" && t.start_date && t.start_date <= promiseNowEnd
+  );
+
+  async function promiseNow() {
+    if (promiseNowTargets.length === 0) return;
+    if (!confirm(`Promise ${promiseNowTargets.length} ticket${promiseNowTargets.length > 1 ? "s" : ""} scheduled through ${promiseNowEnd}? Promised work is pinned and scored in PPC.`)) return;
+    for (const t of promiseNowTargets) {
+      await patchTicket(t.id, { status: "promised", promised_end: ticketEnd(t) });
+    }
+  }
+
   // ── Promise / complete ──────────────────────────────────────────────────────
   async function promiseTicket(t: PullTicket) {
     const end = ticketEnd(t);
@@ -589,6 +674,11 @@ export default function PullPlanBoard({
           title="Connect mode: click a predecessor ticket, then its successor">
           🔗 Connect
         </button>
+        <button onClick={promiseNow} disabled={promiseNowTargets.length === 0}
+          className="rounded bg-[#2A6B35] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#235a2c] disabled:opacity-40"
+          title={`Promise all planned tickets scheduled through ${promiseNowEnd}`}>
+          📌 Promise Now{promiseNowTargets.length > 0 ? ` (${promiseNowTargets.length})` : ""}
+        </button>
         <div className="ml-2 flex items-center gap-1">
           <button onClick={() => setZoom(z => Math.max(0.5, z - 0.15))}
             className="rounded border border-zinc-300 px-2 py-1 text-sm text-zinc-600 hover:bg-zinc-50">−</button>
@@ -675,6 +765,13 @@ export default function PullPlanBoard({
         {panel === "locations" && (
           <PanelShell title="Locations" onClose={() => setPanel(null)}>
             <LocationsPanel locations={locations} onAdd={addLocation} onRemove={removeLocation} />
+          </PanelShell>
+        )}
+        {panel === "snapshots" && (
+          <PanelShell title="Snapshots" onClose={() => setPanel(null)}>
+            <SnapshotsPanel snapshots={snapshots} members={members} isAdmin={isAdmin}
+              currentUserId={currentUserId} busy={snapBusy}
+              onTake={takeSnapshot} onRestore={restoreSnapshot} onDelete={deleteSnapshot} />
           </PanelShell>
         )}
         {panel === "filters" && (

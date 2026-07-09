@@ -100,6 +100,23 @@ export interface PullTicket {
   roadblock_priority: "on_track" | "needs_attention" | "critical";
 }
 
+export interface PullSnapshotData {
+  lanes: PullLane[];
+  tickets: PullTicket[];
+  milestones: PullMilestone[];
+  deps: PullTicketDep[];
+  msLinks: PullMilestoneLink[];
+  active_date: string;
+}
+
+export interface PullSnapshot {
+  id: string;
+  name: string;
+  created_by: string;
+  data: PullSnapshotData;
+  created_at: string;
+}
+
 export const VARIANCE_REASONS = [
   "Weather",
   "Manpower / Labor",
