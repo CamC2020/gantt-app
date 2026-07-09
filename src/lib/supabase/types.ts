@@ -44,6 +44,13 @@ export interface Task {
   is_milestone: boolean;
   subcontractor: string | null;
   crew_size: number | null;
+  role_id: string | null;
+  is_constraint: boolean;
+}
+
+export interface PullTicketSupport {
+  ticket_id: string;
+  user_id: string;
 }
 
 export interface MemberHoliday {
@@ -98,6 +105,7 @@ export interface PullTicket {
   variance_note: string;
   roadblock_need_by: string | null;
   roadblock_priority: "on_track" | "needs_attention" | "critical";
+  source_task_id: string | null;
 }
 
 export interface PullConstraint {
@@ -180,6 +188,7 @@ export interface PullMilestone {
   date: string | null;   // null = in the tray
   lane_id: string | null;
   row_index: number;
+  source_task_id?: string | null;
 }
 
 export type ReminderType = "5_day" | "1_day";

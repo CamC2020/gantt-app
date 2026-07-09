@@ -41,7 +41,8 @@ function tk(id: string, lane: string, desc: string, startOffset: number | null, 
     location: "", location_id: loc, row_index: row,
     work_sat: false, work_sun: false,
     notes: "", variance_reason: "", variance_note: "",
-    roadblock_need_by: null, roadblock_priority: "on_track", ...extra,
+    roadblock_need_by: null, roadblock_priority: "on_track",
+    source_task_id: null, ...extra,
   };
 }
 

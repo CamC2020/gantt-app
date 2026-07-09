@@ -5,9 +5,9 @@ import { createClient } from "@/lib/supabase/client";
 import type {
   Profile, PullLane, PullTicket, PullMilestone, PullTicketStatus,
   PullRole, PullTicketDep, PullLocation, PullMilestoneLink, PullSnapshot, PullSnapshotData,
-  PullConstraint, PullConstraintLink,
+  PullConstraint, PullConstraintLink, PullTicketSupport, Task, TaskDependency,
 } from "@/lib/supabase/types";
-import { addDays, diffInDays, formatISODate, parseISODate, todayISO } from "@/lib/date";
+import { addDays, countWorkingDays, diffInDays, formatISODate, parseISODate, todayISO } from "@/lib/date";
 import TicketCard, { ticketEnd } from "./TicketCard";
 import TicketModal from "./TicketModal";
 import {
@@ -62,6 +62,7 @@ const PRIORITY_RING: Record<PullConstraint["priority"], string> = {
 export default function PullPlanBoard({
   initialLanes, initialTickets, initialMilestones, initialRoles, initialDeps,
   initialMsLinks = [], initialLocations, initialSnapshots = [], initialConstraints = [], initialCLinks = [],
+  initialSupport = [], masterTasks = [], masterDeps = [], lookaheadProjectId = null,
   initialActiveDate, members, currentUserId, isAdmin,
 }: {
   initialLanes: PullLane[];
@@ -74,6 +75,10 @@ export default function PullPlanBoard({
   initialSnapshots?: PullSnapshot[];
   initialConstraints?: PullConstraint[];
   initialCLinks?: PullConstraintLink[];
+  initialSupport?: PullTicketSupport[];
+  masterTasks?: Task[];
+  masterDeps?: TaskDependency[];
+  lookaheadProjectId?: string | null;
   initialActiveDate: string | null;
   members: Profile[];
   currentUserId: string;
@@ -90,6 +95,9 @@ export default function PullPlanBoard({
   const [snapBusy, setSnapBusy] = useState(false);
   const [constraints, setConstraints] = useState<PullConstraint[]>(initialConstraints);
   const [cLinks, setCLinks] = useState<PullConstraintLink[]>(initialCLinks);
+  const [support, setSupport] = useState<PullTicketSupport[]>(initialSupport);
+  const [importBusy, setImportBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
   const [editingConstraint, setEditingConstraint] = useState<string | null>(null);
   const [showCForm, setShowCForm] = useState(false);
   const [cDesc, setCDesc] = useState("");
@@ -497,6 +505,280 @@ export default function PullPlanBoard({
     await supa.from("pull_snapshots").delete().eq("id", id);
   }
 
+  // ── Support members on tickets ──────────────────────────────────────────────
+  async function setTicketSupport(ticketId: string, userIds: string[]) {
+    setSupport(prev => [
+      ...prev.filter(s => s.ticket_id !== ticketId),
+      ...userIds.map(u => ({ ticket_id: ticketId, user_id: u })),
+    ]);
+    await supa.from("pull_ticket_support").delete().eq("ticket_id", ticketId);
+    if (userIds.length > 0) {
+      const { error: err } = await supa.from("pull_ticket_support")
+        .insert(userIds.map(u => ({ ticket_id: ticketId, user_id: u })));
+      if (err) setError(err.message);
+    }
+  }
+
+  // ── Import Master: bring non-active master tasks onto the board ────────────
+  async function importMaster() {
+    if (importBusy) return;
+    setImportBusy(true);
+    try {
+      const NO_HOL = new Set<string>();
+      // WBS numbering over the whole master schedule (matches the Gantt's "#")
+      const childrenOf = new Map<string | null, Task[]>();
+      for (const t of masterTasks) {
+        const k = t.parent_id ?? null;
+        if (!childrenOf.has(k)) childrenOf.set(k, []);
+        childrenOf.get(k)!.push(t);
+      }
+      for (const g of childrenOf.values()) g.sort((a, b) => a.sort_order - b.sort_order);
+      const wbs = new Map<string, string>();
+      (function walk(pid: string | null, prefix: string) {
+        (childrenOf.get(pid) ?? []).forEach((t, i) => {
+          const label = prefix ? `${prefix}.${i + 1}` : `${i + 1}`;
+          wbs.set(t.id, label);
+          walk(t.id, label);
+        });
+      })(null, "");
+
+      const alreadyImported = new Set<string>([
+        ...tickets.map(t => t.source_task_id).filter((x): x is string => !!x),
+        ...milestones.map(m => m.source_task_id).filter((x): x is string => !!x),
+      ]);
+      const isLeaf = (t: Task) => (childrenOf.get(t.id) ?? []).length === 0;
+      const candidates = masterTasks.filter(t =>
+        isLeaf(t) && !t.is_constraint && t.start_date >= activeDate && !alreadyImported.has(t.id)
+      );
+      if (candidates.length === 0) {
+        setError("Nothing new to import — all master tasks past the active line are already on the board.");
+        setImportBusy(false);
+        return;
+      }
+      if (!confirm(`Import ${candidates.length} master schedule item${candidates.length > 1 ? "s" : ""} from ${activeDate} onward into the “Undefined” swimlane?`)) {
+        setImportBusy(false);
+        return;
+      }
+
+      // Ensure the "Undefined" swimlane exists (at the bottom)
+      let undefLane = lanes.find(l => l.name.toLowerCase() === "undefined");
+      if (!undefLane) {
+        const { data, error: err } = await supa.from("pull_lanes")
+          .insert({ name: "Undefined", sort_order: lanes.length })
+          .select("id, name, sort_order").single();
+        if (err) throw err;
+        undefLane = data as PullLane;
+        setLanes(prev => [...prev, undefLane!]);
+      }
+
+      const roleIds = new Set(roles.map(r => r.id));
+      const memberIds = new Set(members.map(m => m.id));
+
+      // Greedy row stacking within the Undefined lane (respect existing occupants)
+      const rows: { end: string }[] = [];
+      for (const t of tickets.filter(x => x.lane_id === undefLane!.id && x.start_date)) {
+        const e = ticketEnd(t)!;
+        const r = t.row_index;
+        while (rows.length <= r) rows.push({ end: "0000" });
+        if (rows[r].end < e) rows[r].end = e;
+      }
+      function placeRow(start: string, end: string): number {
+        for (let r = 0; r < rows.length; r++) {
+          if (rows[r].end < start) { rows[r].end = end; return r; }
+        }
+        rows.push({ end });
+        return rows.length - 1;
+      }
+
+      const newTickets: PullTicket[] = [];
+      const newMilestones: PullMilestone[] = [];
+      const taskToTicket = new Map<string, string>();
+      const taskToMilestone = new Map<string, string>();
+      for (const t of tickets) if (t.source_task_id) taskToTicket.set(t.source_task_id, t.id);
+      for (const m of milestones) if (m.source_task_id) taskToMilestone.set(m.source_task_id, m.id);
+
+      const sorted = [...candidates].sort((a, b) => a.start_date.localeCompare(b.start_date));
+      for (const mt of sorted) {
+        const label = `${wbs.get(mt.id) ?? ""} ${mt.title}`.trim();
+        if (mt.is_milestone) {
+          const id = crypto.randomUUID();
+          newMilestones.push({
+            id, label, date: mt.start_date, lane_id: undefLane.id,
+            row_index: placeRow(mt.start_date, mt.start_date), source_task_id: mt.id,
+          });
+          taskToMilestone.set(mt.id, id);
+        } else {
+          const id = crypto.randomUUID();
+          const dur = Math.max(1, countWorkingDays(mt.start_date, mt.end_date, mt.work_sat ?? false, mt.work_sun ?? false, NO_HOL));
+          newTickets.push({
+            id, lane_id: undefLane.id, owner_id: currentUserId,
+            description: label, start_date: mt.start_date, duration: dur,
+            crew_size: mt.crew_size ?? null, status: "planned",
+            roadblock: false, roadblock_note: "", promised_end: null, sort_order: 0,
+            role_id: mt.role_id && roleIds.has(mt.role_id) ? mt.role_id : null,
+            responsible_id: mt.champion_id && memberIds.has(mt.champion_id) ? mt.champion_id : null,
+            location: "", location_id: null,
+            row_index: placeRow(mt.start_date, mt.end_date),
+            work_sat: mt.work_sat ?? false, work_sun: mt.work_sun ?? false,
+            notes: "", variance_reason: "", variance_note: "",
+            roadblock_need_by: null, roadblock_priority: "on_track",
+            source_task_id: mt.id,
+          });
+          taskToTicket.set(mt.id, id);
+        }
+      }
+
+      // Auto-connect predecessors among imported (and previously imported) items
+      const newDeps: PullTicketDep[] = [];
+      const newMsLinks: Omit<PullMilestoneLink, "id">[] = [];
+      for (const d of masterDeps) {
+        const predT = taskToTicket.get(d.predecessor_id);
+        const succT = taskToTicket.get(d.task_id);
+        const predM = taskToMilestone.get(d.predecessor_id);
+        const succM = taskToMilestone.get(d.task_id);
+        if (predT && succT) {
+          if (!deps.some(x => x.ticket_id === succT && x.predecessor_id === predT) &&
+              !newDeps.some(x => x.ticket_id === succT && x.predecessor_id === predT)) {
+            newDeps.push({ ticket_id: succT, predecessor_id: predT });
+          }
+        } else if (predM && succT) {
+          if (!msLinks.some(x => x.ticket_id === succT && x.milestone_id === predM)) {
+            newMsLinks.push({ ticket_id: succT, milestone_id: predM, ticket_is_pred: false });
+          }
+        } else if (predT && succM) {
+          if (!msLinks.some(x => x.ticket_id === predT && x.milestone_id === succM)) {
+            newMsLinks.push({ ticket_id: predT, milestone_id: succM, ticket_is_pred: true });
+          }
+        }
+      }
+
+      if (newMilestones.length) {
+        const { error: err } = await supa.from("pull_milestones").insert(newMilestones);
+        if (err) throw err;
+      }
+      if (newTickets.length) {
+        const { error: err } = await supa.from("pull_tickets").insert(newTickets);
+        if (err) throw err;
+      }
+      if (newDeps.length) {
+        const { error: err } = await supa.from("pull_ticket_deps").insert(newDeps);
+        if (err) throw err;
+      }
+      let insertedMsLinks: PullMilestoneLink[] = [];
+      if (newMsLinks.length) {
+        const { data, error: err } = await supa.from("pull_milestone_links")
+          .insert(newMsLinks).select("id, ticket_id, milestone_id, ticket_is_pred");
+        if (err) throw err;
+        insertedMsLinks = (data ?? []) as PullMilestoneLink[];
+      }
+
+      setMilestones(prev => [...prev, ...newMilestones]);
+      setTickets(prev => [...prev, ...newTickets]);
+      setDeps(prev => [...prev, ...newDeps]);
+      setMsLinks(prev => [...prev, ...insertedMsLinks]);
+    } catch (e) {
+      setError(`Import failed: ${(e as { message?: string }).message ?? String(e)}`);
+    }
+    setImportBusy(false);
+  }
+
+  // ── Export to Lookahead: publish the active section as the lookahead ───────
+  async function exportToLookahead() {
+    if (!lookaheadProjectId || exportBusy) return;
+    const expTickets = tickets.filter(t => !t.status.startsWith("done_") && t.start_date && t.start_date <= activeDate);
+    const expMilestones = milestones.filter(m => m.date && m.date <= activeDate);
+    const expConstraints = constraints.filter(c => !c.resolved && c.date && c.date <= activeDate);
+    const total = expTickets.length + expMilestones.length + expConstraints.length;
+    if (total === 0) { setError("Nothing to export — no unfinished items on or before the active line."); return; }
+    if (!confirm(`Export ${total} item${total > 1 ? "s" : ""} to the Lookahead? This DELETES everything currently in the lookahead and replaces it.`)) return;
+    setExportBusy(true);
+    try {
+      // Wipe the current lookahead
+      const { data: oldTasks, error: qErr } = await supa.from("tasks").select("id").eq("project_id", lookaheadProjectId);
+      if (qErr) throw qErr;
+      const oldIds = (oldTasks ?? []).map(t => t.id);
+      if (oldIds.length) {
+        await supa.from("task_dependencies").delete().in("task_id", oldIds);
+        await supa.from("task_dependencies").delete().in("predecessor_id", oldIds);
+        const { error: dErr } = await supa.from("tasks").delete().eq("project_id", lookaheadProjectId);
+        if (dErr) throw dErr;
+      }
+
+      // Build lookahead tasks
+      const pullToTask = new Map<string, string>(); // pull item id -> new task id
+      const newTasks: Record<string, unknown>[] = [];
+      let idx = 0;
+      const sortedT = [...expTickets].sort((a, b) => a.start_date!.localeCompare(b.start_date!));
+      for (const t of sortedT) {
+        const id = crypto.randomUUID();
+        pullToTask.set(t.id, id);
+        newTasks.push({
+          id, project_id: lookaheadProjectId, title: t.description,
+          start_date: t.start_date, end_date: ticketEnd(t),
+          champion_id: t.responsible_id, status: t.status === "in_progress" ? "in_progress" : "not_started",
+          parent_id: null, sort_order: idx++,
+          work_sat: t.work_sat, work_sun: t.work_sun,
+          is_milestone: false, is_constraint: false,
+          crew_size: t.crew_size, role_id: t.role_id,
+        });
+      }
+      for (const m of expMilestones) {
+        const id = crypto.randomUUID();
+        pullToTask.set(m.id, id);
+        newTasks.push({
+          id, project_id: lookaheadProjectId, title: m.label,
+          start_date: m.date, end_date: m.date,
+          champion_id: null, status: "not_started",
+          parent_id: null, sort_order: idx++,
+          work_sat: false, work_sun: false,
+          is_milestone: true, is_constraint: false,
+          crew_size: null, role_id: null,
+        });
+      }
+      for (const c of expConstraints) {
+        const id = crypto.randomUUID();
+        pullToTask.set(c.id, id);
+        newTasks.push({
+          id, project_id: lookaheadProjectId, title: c.description,
+          start_date: c.date, end_date: c.date,
+          champion_id: c.responsible_id, status: "not_started",
+          parent_id: null, sort_order: idx++,
+          work_sat: false, work_sun: false,
+          is_milestone: false, is_constraint: true,
+          crew_size: null, role_id: null,
+        });
+      }
+      const { error: iErr } = await supa.from("tasks").insert(newTasks);
+      if (iErr) throw iErr;
+
+      // Connections
+      const newTaskDeps: { task_id: string; predecessor_id: string; lag_days: number }[] = [];
+      for (const d of deps) {
+        const a = pullToTask.get(d.predecessor_id), b = pullToTask.get(d.ticket_id);
+        if (a && b) newTaskDeps.push({ task_id: b, predecessor_id: a, lag_days: 0 });
+      }
+      for (const l of msLinks) {
+        const tk = pullToTask.get(l.ticket_id), ms = pullToTask.get(l.milestone_id);
+        if (!tk || !ms) continue;
+        newTaskDeps.push(l.ticket_is_pred
+          ? { task_id: ms, predecessor_id: tk, lag_days: 0 }
+          : { task_id: tk, predecessor_id: ms, lag_days: 0 });
+      }
+      for (const l of cLinks) {
+        const tk = pullToTask.get(l.ticket_id), cn = pullToTask.get(l.constraint_id);
+        if (tk && cn) newTaskDeps.push({ task_id: tk, predecessor_id: cn, lag_days: 0 });
+      }
+      if (newTaskDeps.length) {
+        const { error: dpErr } = await supa.from("task_dependencies").insert(newTaskDeps);
+        if (dpErr) throw dpErr;
+      }
+      alert(`Exported ${total} items to the Lookahead.`);
+    } catch (e) {
+      setError(`Export failed: ${(e as { message?: string }).message ?? String(e)}`);
+    }
+    setExportBusy(false);
+  }
+
   // ── Promise Now: bulk-promise all planned tickets in the next period ───────
   const promiseNowEnd = addDays(activeDate, 7);
   const promiseNowTargets = tickets.filter(
@@ -802,6 +1084,20 @@ export default function PullPlanBoard({
           </span>
         )}
         {filtersActive && <span className="text-xs text-amber-600">🔍 Filters active</span>}
+        <span className="ml-auto flex items-center gap-2">
+          <button onClick={importMaster} disabled={importBusy || masterTasks.length === 0}
+            className="rounded border border-[#1A3560] px-3 py-1.5 text-sm font-medium text-[#1A3560] hover:bg-blue-50 disabled:opacity-40"
+            title={`Import master schedule tasks from ${activeDate} onward into the “Undefined” swimlane`}>
+            {importBusy ? "Importing…" : "⬇ Import Master"}
+          </button>
+          {isAdmin && (
+            <button onClick={exportToLookahead} disabled={exportBusy || !lookaheadProjectId}
+              className="rounded border border-[#2A6B35] px-3 py-1.5 text-sm font-medium text-[#2A6B35] hover:bg-green-50 disabled:opacity-40"
+              title="Replace the 6-Week Lookahead with everything on or before the active line">
+              {exportBusy ? "Exporting…" : "⬆ Export to Lookahead"}
+            </button>
+          )}
+        </span>
       </div>
 
       {showLaneForm && (
@@ -1265,6 +1561,8 @@ export default function PullPlanBoard({
               kind: "constraint" as const,
             })),
           ]}
+          supportIds={support.filter(s => s.ticket_id === editingTicket.id).map(s => s.user_id)}
+          onSetSupport={ids => setTicketSupport(editingTicket.id, ids)}
           editable={canEdit(editingTicket)}
           onPatch={patch => patchTicket(editingTicket.id, patch)}
           onRemoveConnection={key => {

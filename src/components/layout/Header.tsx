@@ -59,12 +59,6 @@ export default async function Header() {
               <Link href="/my-tasks" className="text-blue-100 hover:text-white transition-colors">
                 My Tasks
               </Link>
-              <Link href="/holidays" className="text-blue-100 hover:text-white transition-colors">
-                Holidays
-              </Link>
-              <Link href="/sub-schedules" className="text-blue-100 hover:text-white transition-colors">
-                Sub-Schedules
-              </Link>
               {isAdmin && (
                 <Link href="/admin" className="text-blue-300 hover:text-white transition-colors text-xs border border-blue-700 rounded px-2 py-1">
                   Users

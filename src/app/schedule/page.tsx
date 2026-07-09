@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getOrCreateMasterProject } from "@/lib/actions/master";
 import MsProjectGantt from "@/components/gantt/MsProjectGantt";
-import type { Profile, Task, TaskDependency, TaskSupport } from "@/lib/supabase/types";
+import type { Profile, Task, TaskDependency, TaskSupport, PullRole } from "@/lib/supabase/types";
 
 export default async function MasterSchedulePage() {
   const supabase = await createClient();
@@ -18,10 +18,10 @@ export default async function MasterSchedulePage() {
     );
   }
 
-  const [{ data: tasks }, { data: profiles }, { data: myProfile }] = await Promise.all([
+  const [{ data: tasks }, { data: profiles }, { data: myProfile }, { data: roles }] = await Promise.all([
     supabase
       .from("tasks")
-      .select("id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone, subcontractor, crew_size")
+      .select("id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone, subcontractor, crew_size, role_id, is_constraint")
       .eq("project_id", master.id)
       .order("sort_order", { ascending: true })
       .returns<Task[]>(),
@@ -37,6 +37,12 @@ export default async function MasterSchedulePage() {
       .eq("id", user.id)
       .maybeSingle()
       .returns<Profile | null>(),
+
+    supabase
+      .from("pull_roles")
+      .select("id, name, color")
+      .order("name", { ascending: true })
+      .returns<PullRole[]>(),
   ]);
 
   const isAdmin = myProfile?.is_admin ?? false;
@@ -70,6 +76,7 @@ export default async function MasterSchedulePage() {
         initialDeps={rawDeps ?? []}
         initialSupport={rawSupport ?? []}
         members={profiles ?? []}
+        roles={roles ?? []}
         readOnly={!isAdmin}
       />
     </div>

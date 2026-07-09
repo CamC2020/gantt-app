@@ -31,20 +31,6 @@ const NAV_CARDS = [
     icon: "✅",
     color: "border-green-600",
   },
-  {
-    href: "/holidays",
-    title: "Holiday Scheduler",
-    description: "Enter your personal non-working days.",
-    icon: "🏖️",
-    color: "border-amber-500",
-  },
-  {
-    href: "/sub-schedules",
-    title: "Sub-Schedules",
-    description: "Project-specific sub-schedules.",
-    icon: "📋",
-    color: "border-zinc-400",
-  },
 ];
 
 export default async function Home() {

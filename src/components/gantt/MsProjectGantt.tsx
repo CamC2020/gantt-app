@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { addDays, diffInDays, parseISODate, todayISO, countWorkingDays, addWorkingDays } from "@/lib/date";
-import type { Profile, Task, TaskDependency, TaskSupport, StatHoliday } from "@/lib/supabase/types";
+import type { Profile, Task, TaskDependency, TaskSupport, StatHoliday, PullRole } from "@/lib/supabase/types";
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 const BASE_DAY_W = 28;
@@ -25,6 +25,7 @@ const COL = {
 // Each color is rgba(26,53,96,α) pre-blended onto white.
 const LEVEL_BG = ["#eaedf1", "#f2f3f6", "#f9fafb", "#ffffff"];
 const MILESTONE_BG = "#fef3e1"; // rgba(245,158,11,0.12) on white
+const CONSTRAINT_BG = "#fde8e8"; // light red tint for constraint rows
 const LEFT_W = Object.values(COL).reduce((a, b) => a + b, 0);
 
 // ─── Champion colours (stable index per member) ───────────────────────────────
@@ -114,7 +115,7 @@ function buildChampionColorMap(members: Profile[]): Map<string, string> {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function MsProjectGantt({
-  projectId, initialTasks, initialDeps, initialSupport, members, readOnly = false,
+  projectId, initialTasks, initialDeps, initialSupport, members, roles = [], readOnly = false,
   hideStatHolidays = false, printTitle = "Master Schedule",
   fixedStart, fixedEnd,
 }: {
@@ -123,6 +124,7 @@ export default function MsProjectGantt({
   initialDeps: TaskDependency[];
   initialSupport: TaskSupport[];
   members: Profile[];
+  roles?: PullRole[];   // pull plan roles/trades for the Role/Trade column
   readOnly?: boolean;
   hideStatHolidays?: boolean;
   printTitle?: string;
@@ -550,6 +552,15 @@ export default function MsProjectGantt({
     const task = taskMap.get(taskId); if (!task || !newEnd) return;
     if (newEnd < task.start_date) return;
     await applyDateChange(taskId, { end_date: newEnd });
+  }
+
+  async function saveRole(taskId: string, roleId: string) {
+    const rid = roleId || null;
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, role_id: rid } : t));
+    tasksRef.current = tasksRef.current.map(t => t.id === taskId ? { ...t, role_id: rid } : t);
+    await supa.auth.getSession();
+    const { error: err } = await supa.from("tasks").update({ role_id: rid }).eq("id", taskId);
+    if (err) setError(err.message);
   }
 
   async function saveSubcontractor(taskId: string, value: string) {
@@ -1024,7 +1035,7 @@ export default function MsProjectGantt({
               <H w={COL.supp}>Support</H>
               <H w={COL.sat} center title="Saturday is a working day">Sat</H>
               <H w={COL.sun} center title="Sunday is a working day">Sun</H>
-              <H w={COL.sub}>Subcontractor</H>
+              <H w={COL.sub}>Role/Trade</H>
               <H w={COL.crew} center>Crew</H>
               <H w={COL.dtc} center title="Working days remaining to end date">DTC</H>
               <H w={COL.act} center />
@@ -1099,10 +1110,11 @@ export default function MsProjectGantt({
             const lvl      = depth(task, taskMap);
             const hasKids  = !!(cm.get(task.id) ?? []).length;
             const isOpen   = expanded.has(task.id);
-            const isMile   = task.is_milestone ?? false;
+            const isCon    = task.is_constraint ?? false;
+            const isMile   = (task.is_milestone ?? false) && !isCon;
             const workSat  = task.work_sat ?? false;
             const workSun  = task.work_sun ?? false;
-            const wDur     = isMile ? 0 : countWorkingDays(task.start_date, task.end_date, workSat, workSun, holidaySet);
+            const wDur     = isMile || isCon ? 0 : countWorkingDays(task.start_date, task.end_date, workSat, workSun, holidaySet);
             const taskDeps  = predsOf.get(task.id) ?? [];
             const predLbl  = taskDeps.map(d => wbsMap.get(d.predecessor_id)).filter(Boolean).join(", ");
             const lagVal   = taskDeps.length ? taskDeps[0].lag_days : 0;
@@ -1115,7 +1127,6 @@ export default function MsProjectGantt({
             const isED     = edit?.taskId === task.id && edit.field === "dur";
             const isES     = edit?.taskId === task.id && edit.field === "start";
             const isEE     = edit?.taskId === task.id && edit.field === "end";
-            const isESub   = edit?.taskId === task.id && edit.field === "sub";
             const isECrew  = edit?.taskId === task.id && edit.field === "crew";
             const today    = todayISO();
             const dtc      = isMile ? null : (task.end_date >= today ? countWorkingDays(today, task.end_date, workSat, workSun, holidaySet) : 0);
@@ -1124,7 +1135,7 @@ export default function MsProjectGantt({
             const champColor = task.champion_id ? (champColorMap.get(task.champion_id) ?? "#94A3B8") : "#94A3B8";
             const barColor = hasKids ? "#1A3560" : champColor;
             const availableForSupport = members.filter(m => m.id !== task.champion_id && !suppIds.includes(m.id));
-            const rowBg    = isMile ? MILESTONE_BG : LEVEL_BG[Math.min(lvl, LEVEL_BG.length - 1)];
+            const rowBg    = isCon ? CONSTRAINT_BG : isMile ? MILESTONE_BG : LEVEL_BG[Math.min(lvl, LEVEL_BG.length - 1)];
 
             return (
               <div key={task.id}
@@ -1191,10 +1202,10 @@ export default function MsProjectGantt({
                         onKeyDown={e => { if (e.key === "Enter") { saveDuration(task.id, edit.value); setEdit(null); } if (e.key === "Escape") setEdit(null); }} />
                     ) : (
                       <span
-                        className={`text-[11px] cursor-text px-1 ${isMile ? "text-amber-600 font-semibold" : "text-zinc-500"}`}
+                        className={`text-[11px] cursor-text px-1 ${isCon ? "text-red-600 font-semibold" : isMile ? "text-amber-600 font-semibold" : "text-zinc-500"}`}
                         onDoubleClick={() => !readOnly && !hasKids && setEdit({ taskId: task.id, field: "dur", value: String(wDur) })}
-                        title={hasKids ? "Summary — auto-computed from sub-tasks" : "Double-click to edit working days"}>
-                        {isMile ? "M" : `${wDur}d`}
+                        title={isCon ? "Constraint" : hasKids ? "Summary — auto-computed from sub-tasks" : "Double-click to edit working days"}>
+                        {isCon ? "C" : isMile ? "M" : `${wDur}d`}
                       </span>
                     )}
                   </div>
@@ -1341,18 +1352,26 @@ export default function MsProjectGantt({
                       title="Sunday counts as a working day for this task" />
                   </div>
 
-                  {/* Subcontractor */}
+                  {/* Role/Trade (from the Pull Plan roles list) */}
                   <div className="shrink-0 flex items-center px-1 overflow-hidden" style={{ width: COL.sub }}>
-                    {hasKids ? <span className="text-[11px] text-zinc-300">—</span> : isESub ? (
-                      <input autoFocus className="w-full rounded border border-[#2E6EA6] px-1 py-0.5 text-[11px] outline-none" value={edit!.value}
-                        onChange={e => setEdit(prev => prev ? { ...prev, value: e.target.value } : prev)}
-                        onBlur={() => { saveSubcontractor(task.id, edit!.value); setEdit(null); }}
-                        onKeyDown={e => { if (e.key === "Enter" || e.key === "Escape") { if (e.key === "Enter") saveSubcontractor(task.id, edit!.value); setEdit(null); } }} />
+                    {hasKids ? <span className="text-[11px] text-zinc-300">—</span> : readOnly ? (
+                      (() => {
+                        const r = roles.find(x => x.id === task.role_id);
+                        return r ? (
+                          <span className="flex items-center gap-1 text-[11px] text-zinc-600 truncate">
+                            <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: r.color }} />
+                            {r.name}
+                          </span>
+                        ) : <span className="text-[11px] text-zinc-300">—</span>;
+                      })()
                     ) : (
-                      <span className={`text-[11px] truncate w-full ${readOnly ? "text-zinc-600" : "cursor-pointer hover:text-[#2E6EA6]"}`}
-                        onClick={() => !readOnly && !hasKids && setEdit({ taskId: task.id, field: "sub", value: task.subcontractor ?? "" })}>
-                        {task.subcontractor || <span className="text-zinc-300">—</span>}
-                      </span>
+                      <select
+                        className="w-full rounded border border-transparent bg-transparent px-0.5 py-0.5 text-[11px] text-zinc-600 outline-none hover:border-zinc-300 focus:border-[#2E6EA6]"
+                        value={task.role_id ?? ""}
+                        onChange={e => saveRole(task.id, e.target.value)}>
+                        <option value="">—</option>
+                        {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                      </select>
                     )}
                   </div>
 
@@ -1411,6 +1430,20 @@ export default function MsProjectGantt({
                     <div className="absolute top-0 bottom-0 w-px bg-red-400/50 pointer-events-none z-0" style={{ left: off * DAY_W }} />
                   ) : null; })()}
 
+                  {/* Constraint circle */}
+                  {isCon && (
+                    <div
+                      className="absolute pointer-events-none z-0 rounded-full"
+                      style={{
+                        left: left + DAY_W / 2 - 9,
+                        top: ROW_H / 2 - 9,
+                        width: 18, height: 18,
+                        backgroundColor: "#ef4444",
+                        border: "2px solid #b91c1c",
+                      }}
+                    />
+                  )}
+
                   {/* Milestone diamond */}
                   {isMile && (
                     <div
@@ -1427,7 +1460,7 @@ export default function MsProjectGantt({
                   )}
 
                   {/* Regular / summary bar */}
-                  {!isMile && (
+                  {!isMile && !isCon && (
                     <div
                       className={`group/bar absolute top-1/2 -translate-y-1/2 flex items-center overflow-hidden shadow-sm
                         ${hasKids ? "" : "rounded"}

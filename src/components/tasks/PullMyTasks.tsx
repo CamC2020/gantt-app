@@ -17,9 +17,10 @@ const STATUS_CHIP: Record<PullTicketStatus, string> = {
 };
 
 export default function PullMyTasks({
-  initialTickets, lanes, roles, locations, currentUserId,
+  initialTickets, supportTickets = [], lanes, roles, locations, currentUserId,
 }: {
   initialTickets: PullTicket[];
+  supportTickets?: PullTicket[];
   lanes: PullLane[];
   roles: PullRole[];
   locations: PullLocation[];
@@ -236,6 +237,42 @@ export default function PullMyTasks({
           </div>
         </div>
       ))}
+
+      {/* Tickets where I'm on the support crew — view only, no email reminders */}
+      {supportTickets.length > 0 && (
+        <div>
+          <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">🤝 Support ({supportTickets.length})</h2>
+          <div className="flex flex-col gap-2">
+            {supportTickets.map(t => {
+              const role = t.role_id ? roleMap.get(t.role_id) : undefined;
+              const loc = t.location_id ? locMap.get(t.location_id) : undefined;
+              const lane = t.lane_id ? laneMap.get(t.lane_id) : undefined;
+              const end = ticketEnd(t);
+              return (
+                <div key={t.id} className="rounded-lg border border-zinc-200 border-l-4 border-l-zinc-300 bg-white shadow-sm">
+                  <div className="flex items-center gap-2 px-3 py-2.5">
+                    {role && <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: role.color }} title={role.name} />}
+                    <span className="flex-1 truncate text-sm font-medium text-zinc-800">{t.description}</span>
+                    {t.roadblock && <span title={t.roadblock_note}>🚧</span>}
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${STATUS_CHIP[t.status]}`}>
+                      {STATUS_LABEL[t.status]}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 px-3 pb-2 text-[11px] text-zinc-500">
+                    {t.start_date
+                      ? <span>{t.start_date}{end && end !== t.start_date ? ` → ${end}` : ""} · {t.duration}d</span>
+                      : <span className="italic">not scheduled</span>}
+                    {lane && <span>{lane.name}</span>}
+                    {loc && <span style={{ color: loc.color }}>📍 {loc.name}</span>}
+                    {t.crew_size != null && <span>👥 {t.crew_size}</span>}
+                    <span className="italic text-zinc-400">supporting</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

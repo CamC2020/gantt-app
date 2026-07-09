@@ -13,6 +13,7 @@ export interface TicketConnection {
 
 export default function TicketModal({
   ticket, lanes, roles, locations, members, connections, editable,
+  supportIds = [], onSetSupport,
   completionOutcome = "done_ontime",
   onPatch, onRemoveConnection, onPromise, onStart, onComplete, onDelete, onClose,
 }: {
@@ -22,6 +23,8 @@ export default function TicketModal({
   locations: PullLocation[];
   members: Profile[];
   connections: TicketConnection[];
+  supportIds?: string[];
+  onSetSupport?: (userIds: string[]) => void;
   editable: boolean;
   completionOutcome?: PullTicketStatus; // what completing right now would be scored as
   onPatch: (patch: Partial<PullTicket>) => void;
@@ -45,6 +48,7 @@ export default function TicketModal({
   const [rbNeedBy, setRbNeedBy] = useState(ticket.roadblock_need_by ?? "");
   const [rbPriority, setRbPriority] = useState(ticket.roadblock_priority);
   const [notes, setNotes] = useState(ticket.notes);
+  const [supp, setSupp] = useState<string[]>(supportIds);
   // Variance prompt shown when completing early/late
   const [completing, setCompleting] = useState(false);
   const [varReason, setVarReason] = useState("");
@@ -69,7 +73,12 @@ export default function TicketModal({
       roadblock_priority: rb ? rbPriority : "on_track",
       notes,
     });
+    onSetSupport?.(supp);
     onClose();
+  }
+
+  function toggleSupport(id: string) {
+    setSupp(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
   }
 
   function handleCompleteClick() {
@@ -148,6 +157,18 @@ export default function TicketModal({
                 {lanes.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
               </select>
             </label>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-500">Support (extra crew — shows under “Support” on their My Tasks, no email reminders)</span>
+            <div className="max-h-28 overflow-y-auto rounded border border-zinc-200 p-2">
+              {members.filter(m => m.id !== ticket.responsible_id).map(m => (
+                <label key={m.id} className="flex items-center gap-2 py-0.5 text-xs text-zinc-700">
+                  <input type="checkbox" checked={supp.includes(m.id)} onChange={() => toggleSupport(m.id)} disabled={!editable} />
+                  <span className="truncate">{m.full_name || m.email}</span>
+                </label>
+              ))}
+            </div>
           </div>
 
           <div className="flex flex-col gap-1">

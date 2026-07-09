@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { getOrCreateMasterProject, getOrCreateLookaheadProject } from "@/lib/actions/master";
 import type {
   Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation, PullMilestoneLink, PullSnapshot,
-  PullConstraint, PullConstraintLink,
+  PullConstraint, PullConstraintLink, PullTicketSupport, Task, TaskDependency,
 } from "@/lib/supabase/types";
 import PullPlanBoard from "@/components/pullplan/PullPlanBoard";
 
@@ -11,22 +12,28 @@ export default async function PullPlanPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
+  const [master, lookahead] = await Promise.all([
+    getOrCreateMasterProject(),
+    getOrCreateLookaheadProject(),
+  ]);
+
   const [
     { data: lanes }, { data: tickets }, { data: milestones },
     { data: profiles }, { data: roles }, { data: deps },
     { data: locations }, { data: settings }, { data: msLinks }, { data: snapshots },
-    { data: constraints }, { data: cLinks },
+    { data: constraints }, { data: cLinks }, { data: support },
+    { data: masterTasks },
   ] = await Promise.all([
     supabase.from("pull_lanes")
       .select("id, name, sort_order")
       .order("sort_order", { ascending: true })
       .returns<PullLane[]>(),
     supabase.from("pull_tickets")
-      .select("id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index, work_sat, work_sun, notes, variance_reason, variance_note, roadblock_need_by, roadblock_priority")
+      .select("id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index, work_sat, work_sun, notes, variance_reason, variance_note, roadblock_need_by, roadblock_priority, source_task_id")
       .order("sort_order", { ascending: true })
       .returns<PullTicket[]>(),
     supabase.from("pull_milestones")
-      .select("id, label, date, lane_id, row_index")
+      .select("id, label, date, lane_id, row_index, source_task_id")
       .order("created_at", { ascending: true })
       .returns<PullMilestone[]>(),
     supabase.from("profiles")
@@ -61,7 +68,25 @@ export default async function PullPlanPage() {
     supabase.from("pull_constraint_links")
       .select("id, constraint_id, ticket_id")
       .returns<PullConstraintLink[]>(),
+    supabase.from("pull_ticket_support")
+      .select("ticket_id, user_id")
+      .returns<PullTicketSupport[]>(),
+    master
+      ? supabase.from("tasks")
+          .select("id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone, subcontractor, crew_size, role_id, is_constraint")
+          .eq("project_id", master.id)
+          .order("sort_order", { ascending: true })
+          .returns<Task[]>()
+      : Promise.resolve({ data: [] as Task[] }),
   ]);
+
+  const masterTaskIds = (masterTasks ?? []).map(t => t.id);
+  const { data: masterDeps } = masterTaskIds.length > 0
+    ? await supabase.from("task_dependencies")
+        .select("task_id, predecessor_id, lag_days")
+        .in("task_id", masterTaskIds)
+        .returns<TaskDependency[]>()
+    : { data: [] as TaskDependency[] };
 
   const myProfile = (profiles ?? []).find(p => p.id === user.id);
 
@@ -81,7 +106,11 @@ export default async function PullPlanPage() {
         initialSnapshots={snapshots ?? []}
         initialConstraints={constraints ?? []}
         initialCLinks={cLinks ?? []}
+        initialSupport={support ?? []}
         initialActiveDate={settings?.active_date ?? null}
+        masterTasks={masterTasks ?? []}
+        masterDeps={masterDeps ?? []}
+        lookaheadProjectId={lookahead?.id ?? null}
         members={profiles ?? []}
         currentUserId={user.id}
         isAdmin={myProfile?.is_admin ?? false}
