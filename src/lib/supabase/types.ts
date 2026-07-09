@@ -86,6 +86,20 @@ export interface PullTicket {
   roadblock_note: string;
   promised_end: string | null;
   sort_order: number;
+  role_id: string | null;
+  responsible_id: string | null;
+  location: string;
+}
+
+export interface PullRole {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export interface PullTicketDep {
+  ticket_id: string;
+  predecessor_id: string;
 }
 
 export interface PullMilestone {
