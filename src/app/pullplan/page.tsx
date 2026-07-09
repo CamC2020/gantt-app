@@ -20,7 +20,7 @@ export default async function PullPlanPage() {
       .order("sort_order", { ascending: true })
       .returns<PullLane[]>(),
     supabase.from("pull_tickets")
-      .select("id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index, work_sat, work_sun")
+      .select("id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index, work_sat, work_sun, notes, variance_reason, variance_note, roadblock_need_by, roadblock_priority")
       .order("sort_order", { ascending: true })
       .returns<PullTicket[]>(),
     supabase.from("pull_milestones")

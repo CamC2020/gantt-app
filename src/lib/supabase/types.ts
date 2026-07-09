@@ -93,7 +93,25 @@ export interface PullTicket {
   row_index: number;
   work_sat: boolean;
   work_sun: boolean;
+  notes: string;
+  variance_reason: string;
+  variance_note: string;
+  roadblock_need_by: string | null;
+  roadblock_priority: "on_track" | "needs_attention" | "critical";
 }
+
+export const VARIANCE_REASONS = [
+  "Weather",
+  "Manpower / Labor",
+  "Materials",
+  "Equipment",
+  "Design / RFI",
+  "Prerequisite work not done",
+  "Owner / Scope change",
+  "Coordination",
+  "Approvals / Permits",
+  "Other",
+] as const;
 
 export interface PullMilestoneLink {
   id: string;

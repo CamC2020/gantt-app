@@ -39,7 +39,9 @@ function tk(id: string, lane: string, desc: string, startOffset: number | null, 
     roadblock: false, roadblock_note: "", promised_end: null, sort_order: 0,
     role_id: role, responsible_id: id.charCodeAt(1) % 2 ? "u2" : "u1",
     location: "", location_id: loc, row_index: row,
-    work_sat: false, work_sun: false, ...extra,
+    work_sat: false, work_sun: false,
+    notes: "", variance_reason: "", variance_note: "",
+    roadblock_need_by: null, roadblock_priority: "on_track", ...extra,
   };
 }
 

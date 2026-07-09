@@ -137,19 +137,36 @@ export function MembersPanel({ members }: { members: Profile[] }) {
   );
 }
 
+const PRIORITY_STYLE: Record<string, { label: string; cls: string }> = {
+  on_track:        { label: "On Track",        cls: "bg-green-100 text-green-700" },
+  needs_attention: { label: "Needs Attention", cls: "bg-amber-200 text-amber-800" },
+  critical:        { label: "Critical",        cls: "bg-red-200 text-red-800" },
+};
+
 export function ConstraintsPanel({ tickets, onOpen }: { tickets: PullTicket[]; onOpen: (id: string) => void }) {
-  const blocked = tickets.filter(t => t.roadblock);
+  const blocked = tickets
+    .filter(t => t.roadblock)
+    .sort((a, b) => (a.roadblock_need_by ?? "9999") < (b.roadblock_need_by ?? "9999") ? -1 : 1);
   return (
     <div className="flex flex-col gap-1.5">
       {blocked.length === 0 && <span className="text-xs italic text-zinc-400">No open constraints. 🎉</span>}
-      {blocked.map(t => (
-        <button key={t.id} onClick={() => onOpen(t.id)}
-          className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-left hover:bg-amber-100">
-          <div className="text-xs font-semibold text-zinc-800">🚧 {t.description}</div>
-          {t.roadblock_note && <div className="text-[10px] text-zinc-500">{t.roadblock_note}</div>}
-          {t.start_date && <div className="text-[10px] text-zinc-400">{t.start_date}</div>}
-        </button>
-      ))}
+      {blocked.map(t => {
+        const pr = PRIORITY_STYLE[t.roadblock_priority] ?? PRIORITY_STYLE.on_track;
+        return (
+          <button key={t.id} onClick={() => onOpen(t.id)}
+            className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-left hover:bg-amber-100">
+            <div className="flex items-center gap-1.5">
+              <span className="flex-1 truncate text-xs font-semibold text-zinc-800">🚧 {t.description}</span>
+              <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-bold uppercase ${pr.cls}`}>{pr.label}</span>
+            </div>
+            {t.roadblock_note && <div className="text-[10px] text-zinc-500">{t.roadblock_note}</div>}
+            <div className="text-[10px] text-zinc-400">
+              {t.roadblock_need_by ? <>need by <span className="font-semibold text-amber-700">{t.roadblock_need_by}</span></> : "no need-by date"}
+              {t.start_date && <> · planned {t.start_date}</>}
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -245,6 +262,22 @@ export function OverviewPanel({ tickets }: { tickets: PullTicket[] }) {
         <Stat label="Complete" v={counts.done} />
       </div>
       <Stat label="🚧 Open constraints" v={counts.roadblocks} />
+      {(() => {
+        const reasons = new Map<string, number>();
+        for (const t of done) if (t.variance_reason) reasons.set(t.variance_reason, (reasons.get(t.variance_reason) ?? 0) + 1);
+        if (reasons.size === 0) return null;
+        return (
+          <div className="mt-1">
+            <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-zinc-400">Variance reasons</div>
+            {[...reasons.entries()].sort((a, b) => b[1] - a[1]).map(([r, n]) => (
+              <div key={r} className="flex items-center justify-between border-b border-zinc-50 py-0.5 text-[11px]">
+                <span className="text-zinc-600">{r}</span>
+                <span className="font-bold text-[#1A3560]">{n}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
     </div>
   );
 }

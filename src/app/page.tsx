@@ -27,7 +27,7 @@ const NAV_CARDS = [
   {
     href: "/my-tasks",
     title: "My Tasks",
-    description: "Tasks assigned to you with status and notes.",
+    description: "Your Pull Plan tickets — promise, start, and complete work.",
     icon: "✅",
     color: "border-green-600",
   },

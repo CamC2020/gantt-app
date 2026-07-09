@@ -32,7 +32,7 @@ const LANE_TINTS: [string, string][] = [
 ];
 
 const TICKET_SELECT =
-  "id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index, work_sat, work_sun";
+  "id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index, work_sat, work_sun, notes, variance_reason, variance_note, roadblock_need_by, roadblock_priority";
 
 function getMonday(dateStr: string): string {
   const d = parseISODate(dateStr);
@@ -364,7 +364,7 @@ export default function PullPlanBoard({
     if (!end) return;
     await patchTicket(t.id, { status: "promised", promised_end: end });
   }
-  async function completeTicket(t: PullTicket) {
+  async function completeTicket(t: PullTicket, varianceReason?: string, varianceNote?: string) {
     const end = ticketEnd(t);
     const promised = t.promised_end;
     let status: PullTicketStatus = "done_ontime";
@@ -372,8 +372,23 @@ export default function PullPlanBoard({
       if (end < promised) status = "done_early";
       else if (end > promised || today > promised) status = "done_late";
     }
-    await patchTicket(t.id, { status, roadblock: false });
+    await patchTicket(t.id, {
+      status, roadblock: false,
+      variance_reason: varianceReason ?? "",
+      variance_note: varianceNote ?? "",
+    });
     setEditing(null);
+  }
+
+  // What the completion status would be right now (drives the variance-reason prompt)
+  function completionOutcome(t: PullTicket): PullTicketStatus {
+    const end = ticketEnd(t);
+    const promised = t.promised_end;
+    if (promised && end) {
+      if (end < promised) return "done_early";
+      if (end > promised || today > promised) return "done_late";
+    }
+    return "done_ontime";
   }
 
   // ── Pointer drag system ─────────────────────────────────────────────────────
@@ -923,7 +938,8 @@ export default function PullPlanBoard({
           onSetDeps={ids => setTicketDeps(editingTicket.id, ids)}
           onPromise={() => promiseTicket(editingTicket)}
           onStart={() => patchTicket(editingTicket.id, { status: "in_progress" })}
-          onComplete={() => completeTicket(editingTicket)}
+          completionOutcome={completionOutcome(editingTicket)}
+          onComplete={(reason, note) => completeTicket(editingTicket, reason, note)}
           onDelete={() => deleteTicket(editingTicket.id)}
           onClose={() => setEditing(null)}
         />

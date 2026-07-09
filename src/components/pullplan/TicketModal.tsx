@@ -1,11 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import type { Profile, PullLane, PullTicket, PullRole, PullLocation } from "@/lib/supabase/types";
+import type { Profile, PullLane, PullTicket, PullRole, PullLocation, PullTicketStatus } from "@/lib/supabase/types";
+import { VARIANCE_REASONS } from "@/lib/supabase/types";
 import { STATUS_LABEL } from "./TicketCard";
 
 export default function TicketModal({
   ticket, lanes, roles, locations, members, allTickets, predIds, editable,
+  completionOutcome = "done_ontime",
   onPatch, onSetDeps, onPromise, onStart, onComplete, onDelete, onClose,
 }: {
   ticket: PullTicket;
@@ -16,11 +18,12 @@ export default function TicketModal({
   allTickets: PullTicket[];
   predIds: string[];
   editable: boolean;
+  completionOutcome?: PullTicketStatus; // what completing right now would be scored as
   onPatch: (patch: Partial<PullTicket>) => void;
   onSetDeps: (predIds: string[]) => void;
   onPromise: () => void;
   onStart: () => void;
-  onComplete: () => void;
+  onComplete: (varianceReason?: string, varianceNote?: string) => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
@@ -34,10 +37,18 @@ export default function TicketModal({
   const [locationId, setLocationId] = useState(ticket.location_id ?? "");
   const [rb, setRb] = useState(ticket.roadblock);
   const [rbNote, setRbNote] = useState(ticket.roadblock_note);
+  const [rbNeedBy, setRbNeedBy] = useState(ticket.roadblock_need_by ?? "");
+  const [rbPriority, setRbPriority] = useState(ticket.roadblock_priority);
+  const [notes, setNotes] = useState(ticket.notes);
   const [preds, setPreds] = useState<string[]>(predIds);
+  // Variance prompt shown when completing early/late
+  const [completing, setCompleting] = useState(false);
+  const [varReason, setVarReason] = useState("");
+  const [varNote, setVarNote] = useState("");
 
   const isDone = ticket.status.startsWith("done_");
   const candidates = allTickets.filter(t => t.id !== ticket.id);
+  const needsVariance = completionOutcome !== "done_ontime";
 
   function save() {
     onPatch({
@@ -51,9 +62,18 @@ export default function TicketModal({
       location_id: locationId || null,
       roadblock: rb,
       roadblock_note: rb ? rbNote : "",
+      roadblock_need_by: rb ? (rbNeedBy || null) : null,
+      roadblock_priority: rb ? rbPriority : "on_track",
+      notes,
     });
     onSetDeps(preds);
     onClose();
+  }
+
+  function handleCompleteClick() {
+    if (needsVariance && !completing) { setCompleting(true); return; }
+    if (needsVariance && !varReason) return; // reason required
+    onComplete(varReason || "", varNote.trim());
   }
 
   function togglePred(id: string) {
@@ -145,13 +165,60 @@ export default function TicketModal({
             <p className="text-xs text-zinc-500">📌 Promised finish: <span className="font-semibold">{ticket.promised_end}</span></p>
           )}
 
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-500">Notes</span>
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} disabled={!editable}
+              placeholder="Anything the team should know…" className={inputCls} />
+          </label>
+
           <label className="flex items-center gap-2 text-sm text-zinc-700">
             <input type="checkbox" checked={rb} onChange={e => setRb(e.target.checked)} disabled={!editable} />
             🚧 Roadblock / constraint
           </label>
           {rb && (
-            <input value={rbNote} onChange={e => setRbNote(e.target.value)} placeholder="What's blocking this work?" disabled={!editable}
-              className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-sm outline-none focus:border-amber-500" />
+            <div className="flex flex-col gap-2 rounded border border-amber-200 bg-amber-50 p-2">
+              <input value={rbNote} onChange={e => setRbNote(e.target.value)} placeholder="What's blocking this work? (e.g. RFI, submittal, material)" disabled={!editable}
+                className="rounded border border-amber-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-amber-500" />
+              <div className="grid grid-cols-2 gap-2">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] font-medium text-amber-700">Need resolved by</span>
+                  <input type="date" value={rbNeedBy} onChange={e => setRbNeedBy(e.target.value)} disabled={!editable}
+                    className="rounded border border-amber-300 bg-white px-2 py-1 text-xs outline-none focus:border-amber-500" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] font-medium text-amber-700">Priority</span>
+                  <select value={rbPriority} onChange={e => setRbPriority(e.target.value as typeof rbPriority)} disabled={!editable}
+                    className="rounded border border-amber-300 bg-white px-2 py-1 text-xs outline-none focus:border-amber-500">
+                    <option value="on_track">On Track</option>
+                    <option value="needs_attention">Needs Attention</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {isDone && ticket.variance_reason && (
+            <p className="text-xs text-zinc-500">
+              Variance: <span className="font-semibold">{ticket.variance_reason}</span>
+              {ticket.variance_note && <> — {ticket.variance_note}</>}
+            </p>
+          )}
+
+          {/* Variance prompt (completing early or late requires a reason, like TouchPlan) */}
+          {completing && needsVariance && !isDone && (
+            <div className="flex flex-col gap-2 rounded border border-blue-200 bg-blue-50 p-2">
+              <span className="text-xs font-semibold text-[#1A3560]">
+                This will complete {completionOutcome === "done_late" ? "LATE" : "EARLY"} vs. the promise — a variance reason is required.
+              </span>
+              <select value={varReason} onChange={e => setVarReason(e.target.value)}
+                className="rounded border border-blue-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6]">
+                <option value="">— select variance reason —</option>
+                {VARIANCE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+              <input value={varNote} onChange={e => setVarNote(e.target.value)} placeholder="Optional note"
+                className="rounded border border-blue-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6]" />
+            </div>
           )}
         </div>
 
@@ -167,8 +234,10 @@ export default function TicketModal({
             </button>
           )}
           {editable && !isDone && (ticket.status === "promised" || ticket.status === "in_progress") && (
-            <button onClick={onComplete} className="rounded bg-[#1A3560] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#152b4e]">
-              ✓ Complete
+            <button onClick={handleCompleteClick}
+              disabled={completing && needsVariance && !varReason}
+              className="rounded bg-[#1A3560] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#152b4e] disabled:opacity-40">
+              ✓ {completing && needsVariance ? "Confirm Complete" : "Complete"}
             </button>
           )}
           <span className="flex-1" />
