@@ -195,7 +195,10 @@ export default function PullPlanBoard({
     return false;
   }
 
-  const trayTickets = tickets.filter(t => !t.start_date);
+  const laneIds = useMemo(() => new Set(lanes.map(l => l.id)), [lanes]);
+  // A ticket belongs in the tray if it has no date yet, or if its lane_id points
+  // at a swimlane that no longer exists (orphaned — see removeLane).
+  const trayTickets = tickets.filter(t => !t.start_date || !t.lane_id || !laneIds.has(t.lane_id));
 
   // ── Lane layout (manual rows via row_index; lane grows, min 2 rows) ────────
   // "Active" items (start_date <= activeDate) are positioned by date and stacked
@@ -379,9 +382,16 @@ export default function PullPlanBoard({
 
   async function removeLane(id: string) {
     if (!confirm("Remove this swimlane? Tickets in it move to the tray.")) return;
+    const affectedIds = tickets.filter(t => t.lane_id === id).map(t => t.id);
     setLanes(prev => prev.filter(l => l.id !== id));
     setTickets(prev => prev.map(t => (t.lane_id === id ? { ...t, lane_id: null, start_date: null } : t)));
     await supa.from("pull_lanes").delete().eq("id", id);
+    // The FK (on delete set null) clears lane_id server-side, but start_date must
+    // be cleared explicitly or these tickets end up with lane_id=null + a stale
+    // start_date — invisible on reload (not in any lane, not in the tray either).
+    if (affectedIds.length > 0) {
+      await supa.from("pull_tickets").update({ start_date: null }).in("id", affectedIds);
+    }
   }
 
   async function addMilestone() {
@@ -571,6 +581,16 @@ export default function PullPlanBoard({
         .insert(userIds.map(u => ({ ticket_id: ticketId, user_id: u })));
       if (err) setError(err.message);
     }
+  }
+
+  // Clears the "don't resurrect deleted imports" blacklist, so any master task
+  // that was previously deleted from the Pull Plan can be imported again.
+  async function resetImportSkips() {
+    if (importBusy) return;
+    if (!confirm("Reset import history? Master tasks you previously removed from the Pull Plan will become importable again.")) return;
+    const { error: err } = await supa.from("pull_import_skips").delete().neq("task_id", "00000000-0000-0000-0000-000000000000");
+    if (err) { setError(err.message); return; }
+    setImportSkips(new Set());
   }
 
   // ── Import Master: bring non-active master tasks onto the board ────────────
@@ -1173,6 +1193,13 @@ export default function PullPlanBoard({
             title={`Import master schedule tasks from ${activeDate} onward into the “Undefined” swimlane`}>
             {importBusy ? "Importing…" : "⬇ Import Master"}
           </button>
+          {isAdmin && importSkips.size > 0 && (
+            <button onClick={resetImportSkips} disabled={importBusy}
+              className="rounded border border-zinc-400 px-3 py-1.5 text-sm font-medium text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
+              title="Allow master tasks you previously removed from the Pull Plan to be imported again">
+              ↺ Reset Import History
+            </button>
+          )}
           {isAdmin && (
             <button onClick={exportToLookahead} disabled={exportBusy || !lookaheadProjectId}
               className="rounded border border-[#2A6B35] px-3 py-1.5 text-sm font-medium text-[#2A6B35] hover:bg-green-50 disabled:opacity-40"
