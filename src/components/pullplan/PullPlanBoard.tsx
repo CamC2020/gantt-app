@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type {
   Profile, PullLane, PullTicket, PullMilestone, PullTicketStatus,
-  PullRole, PullTicketDep, PullLocation,
+  PullRole, PullTicketDep, PullLocation, PullMilestoneLink,
 } from "@/lib/supabase/types";
 import { addDays, diffInDays, formatISODate, parseISODate, todayISO } from "@/lib/date";
 import TicketCard, { TICKET_H, ticketEnd } from "./TicketCard";
@@ -32,7 +32,7 @@ const LANE_TINTS: [string, string][] = [
 ];
 
 const TICKET_SELECT =
-  "id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index";
+  "id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index, work_sat, work_sun";
 
 function getMonday(dateStr: string): string {
   const d = parseISODate(dateStr);
@@ -52,13 +52,14 @@ type DragMode =
 
 export default function PullPlanBoard({
   initialLanes, initialTickets, initialMilestones, initialRoles, initialDeps,
-  initialLocations, initialActiveDate, members, currentUserId, isAdmin,
+  initialMsLinks = [], initialLocations, initialActiveDate, members, currentUserId, isAdmin,
 }: {
   initialLanes: PullLane[];
   initialTickets: PullTicket[];
   initialMilestones: PullMilestone[];
   initialRoles: PullRole[];
   initialDeps: PullTicketDep[];
+  initialMsLinks?: PullMilestoneLink[];
   initialLocations: PullLocation[];
   initialActiveDate: string | null;
   members: Profile[];
@@ -71,12 +72,13 @@ export default function PullPlanBoard({
   const [roles, setRoles] = useState<PullRole[]>(initialRoles);
   const [locations, setLocations] = useState<PullLocation[]>(initialLocations);
   const [deps, setDeps] = useState<PullTicketDep[]>(initialDeps);
+  const [msLinks, setMsLinks] = useState<PullMilestoneLink[]>(initialMsLinks);
   const [activeDate, setActiveDate] = useState<string>(initialActiveDate ?? todayISO());
   const [zoom, setZoom] = useState(1);
   const [panel, setPanel] = useState<PanelId>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [connectMode, setConnectMode] = useState(false);
-  const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const [connectFrom, setConnectFrom] = useState<{ kind: "ticket" | "milestone"; id: string } | null>(null);
   const [filters, setFilters] = useState<Filters>({ roleIds: new Set(), memberIds: new Set(), locationIds: new Set() });
   const [showLaneForm, setShowLaneForm] = useState(false);
   const [newLaneName, setNewLaneName] = useState("");
@@ -100,7 +102,15 @@ export default function PullPlanBoard({
   // ── Timeline geometry ───────────────────────────────────────────────────────
   const dayW = Math.round(BASE_DAY_W * zoom);
   const weekW = Math.round(BASE_WEEK_W * zoom);
-  const activeStart = getMonday(addDays(activeDate, -7 * ACTIVE_WEEKS_BEFORE));
+  // Active zone starts at least 2 weeks before the active line, extended back
+  // to the earliest placed ticket so nothing is cut off.
+  const earliestStart = tickets.reduce<string | null>(
+    (min, t) => (t.start_date && (!min || t.start_date < min) ? t.start_date : min), null
+  );
+  const defaultStart = addDays(activeDate, -7 * ACTIVE_WEEKS_BEFORE);
+  const activeStart = getMonday(
+    earliestStart && earliestStart < defaultStart ? earliestStart : defaultStart
+  );
   const activeDays = diffInDays(activeStart, activeDate) + 1;
   const activeW = activeDays * dayW;
   const firstFuture = addDays(activeDate, 1);
@@ -237,6 +247,22 @@ export default function PullPlanBoard({
   async function removeDep(ticketId: string, predId: string) {
     setDeps(prev => prev.filter(d => !(d.ticket_id === ticketId && d.predecessor_id === predId)));
     await supa.from("pull_ticket_deps").delete().eq("ticket_id", ticketId).eq("predecessor_id", predId);
+  }
+
+  async function addMsLink(ticketId: string, milestoneId: string, ticketIsPred: boolean) {
+    if (msLinks.some(l => l.ticket_id === ticketId && l.milestone_id === milestoneId)) return;
+    const tempId = `tmp-${Date.now()}`;
+    setMsLinks(prev => [...prev, { id: tempId, ticket_id: ticketId, milestone_id: milestoneId, ticket_is_pred: ticketIsPred }]);
+    const { data, error: err } = await supa.from("pull_milestone_links")
+      .insert({ ticket_id: ticketId, milestone_id: milestoneId, ticket_is_pred: ticketIsPred })
+      .select("id, ticket_id, milestone_id, ticket_is_pred").single();
+    if (err) { setError(err.message); setMsLinks(prev => prev.filter(l => l.id !== tempId)); return; }
+    if (data) setMsLinks(prev => prev.map(l => (l.id === tempId ? (data as PullMilestoneLink) : l)));
+  }
+
+  async function removeMsLink(id: string) {
+    setMsLinks(prev => prev.filter(l => l.id !== id));
+    await supa.from("pull_milestone_links").delete().eq("id", id);
   }
 
   async function addLane() {
@@ -398,13 +424,47 @@ export default function PullPlanBoard({
 
   function handleTicketClick(t: PullTicket) {
     if (connectMode) {
-      if (!connectFrom) { setConnectFrom(t.id); return; }
-      if (connectFrom !== t.id) addDep(t.id, connectFrom); // from → to (predecessor → successor)
+      if (!connectFrom) { setConnectFrom({ kind: "ticket", id: t.id }); return; }
+      if (connectFrom.kind === "ticket" && connectFrom.id !== t.id) addDep(t.id, connectFrom.id);
+      if (connectFrom.kind === "milestone") addMsLink(t.id, connectFrom.id, false); // milestone → ticket
       setConnectFrom(null);
       return;
     }
     setEditing(t.id);
   }
+
+  function handleMilestoneClick(m: PullMilestone) {
+    if (!connectMode) return;
+    if (!connectFrom) { setConnectFrom({ kind: "milestone", id: m.id }); return; }
+    if (connectFrom.kind === "ticket") addMsLink(connectFrom.id, m.id, true); // ticket → milestone
+    setConnectFrom(null);
+  }
+
+  // Out of sequence: a ticket that starts on/before a predecessor's end,
+  // or a milestone-predecessor relationship that's violated.
+  const outOfSeqIds = useMemo(() => {
+    const bad = new Set<string>();
+    for (const dep of deps) {
+      const pred = ticketMap.get(dep.predecessor_id);
+      const succ = ticketMap.get(dep.ticket_id);
+      if (!pred?.start_date || !succ?.start_date) continue;
+      const predEnd = ticketEnd(pred)!;
+      if (succ.start_date <= predEnd) bad.add(succ.id);
+    }
+    for (const l of msLinks) {
+      const t = ticketMap.get(l.ticket_id);
+      const m = milestones.find(x => x.id === l.milestone_id);
+      if (!t?.start_date || !m) continue;
+      if (l.ticket_is_pred) {
+        // ticket must finish before the milestone date
+        if (ticketEnd(t)! >= m.date) bad.add(t.id);
+      } else {
+        // ticket must start after the milestone date
+        if (t.start_date <= m.date) bad.add(t.id);
+      }
+    }
+    return bad;
+  }, [deps, msLinks, ticketMap, milestones]);
 
   // Esc exits connect mode
   useEffect(() => {
@@ -505,7 +565,7 @@ export default function PullPlanBoard({
             <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
               location={t.location_id ? locMap.get(t.location_id) : undefined}
               responsible={memberMap.get(t.responsible_id ?? t.owner_id)}
-              hid={isHid(t)} connectFrom={connectFrom === t.id} compact />
+              hid={isHid(t)} connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id} compact />
           </div>
         ))}
       </div>
@@ -643,7 +703,10 @@ export default function PullPlanBoard({
                   <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
                     location={t.location_id ? locMap.get(t.location_id) : undefined}
                     responsible={memberMap.get(t.responsible_id ?? t.owner_id)}
-                    width={pos.w} hid={isHid(t)} connectFrom={connectFrom === t.id} />
+                    width={pos.w} hid={isHid(t)}
+                    connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id}
+                    outOfSeq={outOfSeqIds.has(t.id)}
+                    onToggleWeekend={canEdit(t) ? dow => patchTicket(t.id, dow === 6 ? { work_sat: !t.work_sat } : { work_sun: !t.work_sun }) : undefined} />
                   {/* Resize handle */}
                   {canEdit(t) && !t.status.startsWith("done_") && (
                     <div data-resize="1"
@@ -659,13 +722,19 @@ export default function PullPlanBoard({
               <svg className="absolute z-20" style={{ left: 0, top: HEADER_H, width: totalW, height: lanesH, pointerEvents: "none" }}>
                 <defs>
                   <marker id="pp-arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
-                    <path d="M0,0 L7,3.5 L0,7 z" fill="#1f2937" />
+                    <path d="M0,0 L7,3.5 L0,7 z" fill="#2E6EA6" />
+                  </marker>
+                  <marker id="pp-arr-red" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+                    <path d="M0,0 L7,3.5 L0,7 z" fill="#dc2626" />
                   </marker>
                 </defs>
                 {deps.map(dep => {
                   const from = ticketPos.get(dep.predecessor_id);
                   const to = ticketPos.get(dep.ticket_id);
                   if (!from || !to) return null;
+                  const pred = ticketMap.get(dep.predecessor_id);
+                  const succ = ticketMap.get(dep.ticket_id);
+                  const bad = !!(pred?.start_date && succ?.start_date && succ.start_date <= ticketEnd(pred)!);
                   const x1 = from.x + from.w, y1 = from.y + TICKET_H / 2;
                   const x2 = to.x, y2 = to.y + TICKET_H / 2;
                   const c = Math.max(16, Math.min(50, (x2 - x1) / 2));
@@ -674,7 +743,36 @@ export default function PullPlanBoard({
                     <g key={`${dep.ticket_id}-${dep.predecessor_id}`}>
                       <path d={d} fill="none" stroke="transparent" strokeWidth="10" style={{ pointerEvents: "stroke", cursor: "pointer" }}
                         onClick={() => { if (confirm("Remove this connection?")) removeDep(dep.ticket_id, dep.predecessor_id); }} />
-                      <path d={d} fill="none" stroke="#1f2937" strokeWidth="1.5" markerEnd="url(#pp-arr)" opacity={0.7} />
+                      <path d={d} fill="none" stroke={bad ? "#dc2626" : "#2E6EA6"} strokeWidth={bad ? 2.2 : 1.8}
+                        markerEnd={bad ? "url(#pp-arr-red)" : "url(#pp-arr)"} opacity={0.85} />
+                    </g>
+                  );
+                })}
+                {msLinks.map(l => {
+                  const m = milestones.find(x => x.id === l.milestone_id);
+                  const tp = ticketPos.get(l.ticket_id);
+                  const t = ticketMap.get(l.ticket_id);
+                  if (!m || !tp || !t) return null;
+                  const mx = xForDate(m.date) + dayW / 2;
+                  const my = 14 + 37; // milestone diamond center (relative to lanes area)
+                  const bad = outOfSeqIds.has(t.id) &&
+                    (l.ticket_is_pred ? ticketEnd(t)! >= m.date : t.start_date! <= m.date);
+                  let x1: number, y1: number, x2: number, y2: number;
+                  if (l.ticket_is_pred) {
+                    x1 = tp.x + tp.w; y1 = tp.y + TICKET_H / 2;
+                    x2 = mx - 30; y2 = my;
+                  } else {
+                    x1 = mx + 30; y1 = my;
+                    x2 = tp.x; y2 = tp.y + TICKET_H / 2;
+                  }
+                  const c = Math.max(16, Math.min(50, (x2 - x1) / 2));
+                  const d = `M ${x1} ${y1} C ${x1 + c} ${y1}, ${x2 - c} ${y2}, ${x2 - 2} ${y2}`;
+                  return (
+                    <g key={l.id}>
+                      <path d={d} fill="none" stroke="transparent" strokeWidth="10" style={{ pointerEvents: "stroke", cursor: "pointer" }}
+                        onClick={() => { if (confirm("Remove this connection?")) removeMsLink(l.id); }} />
+                      <path d={d} fill="none" stroke={bad ? "#dc2626" : "#2E6EA6"} strokeWidth={bad ? 2.2 : 1.8}
+                        markerEnd={bad ? "url(#pp-arr-red)" : "url(#pp-arr)"} opacity={0.85} />
                     </g>
                   );
                 })}
@@ -686,12 +784,15 @@ export default function PullPlanBoard({
               const x = xForDate(m.date);
               if (x < 0 || m.date > boardEnd) return null;
               const size = 74;
+              const isFrom = connectFrom?.kind === "milestone" && connectFrom.id === m.id;
               return (
-                <div key={m.id} className="absolute z-20 flex items-center justify-center"
+                <div key={m.id} className={`absolute z-20 flex items-center justify-center ${connectMode ? "cursor-pointer" : ""}`}
                   style={{ left: x - size / 2 + dayW / 2, top: HEADER_H + 14, width: size, height: size }}
-                  onDoubleClick={() => removeMilestone(m.id)}
-                  title={`Milestone: ${m.label} — ${m.date} (double-click to remove)`}>
-                  <div className="absolute inset-0 rotate-45 rounded-[3px] shadow-md" style={{ backgroundColor: "#4fd1c5" }} />
+                  onClick={() => handleMilestoneClick(m)}
+                  onDoubleClick={() => { if (!connectMode) removeMilestone(m.id); }}
+                  title={`Milestone: ${m.label} — ${m.date}${connectMode ? " (click to connect)" : " (double-click to remove)"}`}>
+                  <div className="absolute inset-0 rotate-45 rounded-[3px] shadow-md"
+                    style={{ backgroundColor: "#4fd1c5", outline: isFrom ? "3px solid #1A3560" : undefined }} />
                   <span className="relative px-2 text-center text-[9px] font-bold leading-tight text-white">{m.label}</span>
                 </div>
               );
@@ -724,6 +825,7 @@ export default function PullPlanBoard({
           <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-green-600 align-middle" />early</span>
           <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-blue-600 align-middle" />on time</span>
           <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-red-600 align-middle" />late</span>
+          <span><span className="mr-1 inline-block h-3 w-3 rounded-sm border-2 border-red-600 align-middle" />out of sequence</span>
         </span>
       </div>
 

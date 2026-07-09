@@ -91,6 +91,15 @@ export interface PullTicket {
   location: string;
   location_id: string | null;
   row_index: number;
+  work_sat: boolean;
+  work_sun: boolean;
+}
+
+export interface PullMilestoneLink {
+  id: string;
+  ticket_id: string;
+  milestone_id: string;
+  ticket_is_pred: boolean;
 }
 
 export interface PullLocation {

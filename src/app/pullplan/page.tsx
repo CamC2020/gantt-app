@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import type {
-  Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation,
+  Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation, PullMilestoneLink,
 } from "@/lib/supabase/types";
 import PullPlanBoard from "@/components/pullplan/PullPlanBoard";
 
@@ -13,14 +13,14 @@ export default async function PullPlanPage() {
   const [
     { data: lanes }, { data: tickets }, { data: milestones },
     { data: profiles }, { data: roles }, { data: deps },
-    { data: locations }, { data: settings },
+    { data: locations }, { data: settings }, { data: msLinks },
   ] = await Promise.all([
     supabase.from("pull_lanes")
       .select("id, name, sort_order")
       .order("sort_order", { ascending: true })
       .returns<PullLane[]>(),
     supabase.from("pull_tickets")
-      .select("id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index")
+      .select("id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index, work_sat, work_sun")
       .order("sort_order", { ascending: true })
       .returns<PullTicket[]>(),
     supabase.from("pull_milestones")
@@ -46,6 +46,9 @@ export default async function PullPlanPage() {
       .select("active_date")
       .eq("id", 1)
       .maybeSingle<{ active_date: string }>(),
+    supabase.from("pull_milestone_links")
+      .select("id, ticket_id, milestone_id, ticket_is_pred")
+      .returns<PullMilestoneLink[]>(),
   ]);
 
   const myProfile = (profiles ?? []).find(p => p.id === user.id);
@@ -61,6 +64,7 @@ export default async function PullPlanPage() {
         initialMilestones={milestones ?? []}
         initialRoles={roles ?? []}
         initialDeps={deps ?? []}
+        initialMsLinks={msLinks ?? []}
         initialLocations={locations ?? []}
         initialActiveDate={settings?.active_date ?? null}
         members={profiles ?? []}

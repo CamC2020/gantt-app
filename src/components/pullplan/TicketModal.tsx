@@ -102,7 +102,7 @@ export default function TicketModal({
               </select>
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-zinc-500">Duration (days)</span>
+              <span className="text-xs font-medium text-zinc-500">Duration (work days)</span>
               <input type="number" min={1} value={dur} onChange={e => setDur(e.target.value)} disabled={!editable} className={inputCls} />
             </label>
             <label className="flex flex-col gap-1">

@@ -1,7 +1,7 @@
 "use client";
 
 import type { Profile, PullTicket, PullLocation, PullRole, PullTicketStatus } from "@/lib/supabase/types";
-import { addDays, parseISODate } from "@/lib/date";
+import { addDays, addWorkingDays, diffInDays, parseISODate } from "@/lib/date";
 
 export const TICKET_H = 78;
 
@@ -20,9 +20,13 @@ const DONE_PIN: Partial<Record<PullTicketStatus, string>> = {
   done_late: "#dc2626",   // late = red pin
 };
 
+const NO_HOLIDAYS = new Set<string>();
+
+// End date = start + (duration-1) WORKING days; weekends skipped unless the
+// ticket has work_sat / work_sun enabled.
 export function ticketEnd(t: PullTicket): string | null {
   if (!t.start_date) return null;
-  return addDays(t.start_date, Math.max(0, t.duration - 1));
+  return addWorkingDays(t.start_date, Math.max(0, t.duration - 1), t.work_sat, t.work_sun, NO_HOLIDAYS);
 }
 
 function fmtShort(iso: string) {
@@ -31,6 +35,7 @@ function fmtShort(iso: string) {
 
 export default function TicketCard({
   t, role, location, responsible, width, hid = false, connectFrom = false, compact = false,
+  outOfSeq = false, onToggleWeekend,
 }: {
   t: PullTicket;
   role: PullRole | undefined;
@@ -40,6 +45,8 @@ export default function TicketCard({
   hid?: boolean;          // filtered out — render grayed "(hid)" style
   connectFrom?: boolean;  // highlighted as the source in connect mode
   compact?: boolean;      // tray rendering
+  outOfSeq?: boolean;     // starts before a predecessor finishes — red trim
+  onToggleWeekend?: (dow: 0 | 6) => void; // click a weekend day-box to make it a workday
 }) {
   const bodyColor = hid ? "#c8cdd3" : role?.color ?? "#9aa2ab";
   const stripColor = hid ? "#a8adb4" : location?.color ?? "#6b7280";
@@ -48,20 +55,68 @@ export default function TicketCard({
   const end = ticketEnd(t);
   const respName = responsible?.full_name?.split(" ")[0] || responsible?.email.split("@")[0] || "";
 
+  // Calendar days spanned (for the workday boxes strip)
+  const spanDays: { date: string; dow: number; working: boolean }[] = [];
+  if (t.start_date && end && !compact) {
+    const n = diffInDays(t.start_date, end) + 1;
+    for (let i = 0; i < n && i < 60; i++) {
+      const d = addDays(t.start_date, i);
+      const dow = parseISODate(d).getDay();
+      const working = dow === 6 ? t.work_sat : dow === 0 ? t.work_sun : true;
+      spanDays.push({ date: d, dow, working });
+    }
+  }
+  const showBoxes = spanDays.length > 1 && (width ?? 0) >= 40;
+
   return (
     <div
-      className="flex h-full select-none flex-col overflow-hidden rounded-[2px]"
+      className="flex h-full select-none flex-col overflow-visible rounded-[2px]"
       style={{
         width: width ?? (compact ? 130 : undefined),
         height: compact ? 74 : TICKET_H,
         backgroundColor: bodyColor,
         boxShadow: connectFrom
           ? "0 0 0 3px #1A3560, 0 2px 5px rgba(0,0,0,.3)"
-          : "0 1px 3px rgba(0,0,0,.35)",
+          : outOfSeq
+            ? "0 0 0 3px #dc2626, 0 2px 5px rgba(0,0,0,.3)"
+            : "0 1px 3px rgba(0,0,0,.35)",
         opacity: hid ? 0.6 : 1,
+        position: "relative",
       }}
       title={`${t.description}${respName ? ` — ${respName}` : ""} · ${STATUS_LABEL[t.status]}${t.roadblock ? ` · 🚧 ${t.roadblock_note}` : ""}`}
     >
+      {/* Workday boxes strip (one box per calendar day; click weekend boxes to toggle workday) */}
+      {showBoxes && (
+        <div className="absolute -top-[7px] left-0 right-0 flex gap-[2px] px-[1px]" style={{ height: 5 }}>
+          {spanDays.map(d => (
+            <div key={d.date}
+              className={d.dow === 0 || d.dow === 6 ? "cursor-pointer" : ""}
+              title={d.dow === 6 ? `Saturday — ${d.working ? "workday (click to remove)" : "not a workday (click to work it)"}`
+                : d.dow === 0 ? `Sunday — ${d.working ? "workday (click to remove)" : "not a workday (click to work it)"}`
+                : d.date}
+              onPointerDown={e => {
+                if ((d.dow === 0 || d.dow === 6) && onToggleWeekend) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onToggleWeekend(d.dow as 0 | 6);
+                }
+              }}
+              style={{
+                flex: 1,
+                borderRadius: 1,
+                backgroundColor: d.working ? (hid ? "#9aa2ab" : "#16a34a") : "rgba(0,0,0,.18)",
+                border: d.dow === 0 || d.dow === 6 ? "1px solid rgba(0,0,0,.3)" : "none",
+              }} />
+          ))}
+        </div>
+      )}
+
+      {/* Out-of-sequence badge */}
+      {outOfSeq && (
+        <span className="absolute -bottom-1.5 -right-1.5 z-10 flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white shadow"
+          title="Out of sequence — starts before a predecessor finishes">!</span>
+      )}
+
       {/* Location tag strip */}
       <div className="flex h-[14px] shrink-0 items-center justify-between px-1" style={{ backgroundColor: stripColor }}>
         <span className="truncate text-[8px] font-bold leading-none text-white">

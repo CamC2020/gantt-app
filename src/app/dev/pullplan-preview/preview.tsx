@@ -1,7 +1,7 @@
 "use client";
 
 import PullPlanBoard from "@/components/pullplan/PullPlanBoard";
-import type { Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation } from "@/lib/supabase/types";
+import type { Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation, PullMilestoneLink } from "@/lib/supabase/types";
 import { addDays, formatISODate } from "@/lib/date";
 
 const today = formatISODate(new Date());
@@ -38,7 +38,8 @@ function tk(id: string, lane: string, desc: string, startOffset: number | null, 
     duration: dur, crew_size: 2 + (id.charCodeAt(1) % 4), status: "planned",
     roadblock: false, roadblock_note: "", promised_end: null, sort_order: 0,
     role_id: role, responsible_id: id.charCodeAt(1) % 2 ? "u2" : "u1",
-    location: "", location_id: loc, row_index: row, ...extra,
+    location: "", location_id: loc, row_index: row,
+    work_sat: false, work_sun: false, ...extra,
   };
 }
 
@@ -67,10 +68,15 @@ const deps: PullTicketDep[] = [
   { ticket_id: "t7", predecessor_id: "t5" },
   { ticket_id: "t8", predecessor_id: "t7" },
   { ticket_id: "t12", predecessor_id: "t8" },
+  { ticket_id: "t6", predecessor_id: "t5" }, // out of sequence: t6 starts before t5 ends
 ];
 
 const milestones: PullMilestone[] = [
   { id: "m1", label: "Ready for Paving", date: addDays(today, 27) },
+];
+
+const msLinks: PullMilestoneLink[] = [
+  { id: "ml1", ticket_id: "t8", milestone_id: "m1", ticket_is_pred: true }, // curb & gutter → milestone (violated → red)
 ];
 
 export default function PullPlanPreview() {
@@ -82,6 +88,7 @@ export default function PullPlanPreview() {
         initialMilestones={milestones}
         initialRoles={roles}
         initialDeps={deps}
+        initialMsLinks={msLinks}
         initialLocations={locations}
         initialActiveDate={today}
         members={members}
