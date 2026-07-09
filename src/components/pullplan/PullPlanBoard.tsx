@@ -50,8 +50,7 @@ type DragMode =
   | { kind: "ticket"; id: string; grabX: number; grabY: number }
   | { kind: "milestone"; id: string }
   | { kind: "constraint"; id: string }
-  | { kind: "resize"; id: string }
-  | { kind: "line" };
+  | { kind: "resize"; id: string };
 
 const PRIORITY_RING: Record<PullConstraint["priority"], string> = {
   on_track: "#9ca3af",
@@ -107,6 +106,7 @@ export default function PullPlanBoard({
   const [cNeedBy, setCNeedBy] = useState("");
   const [cPriority, setCPriority] = useState<PullConstraint["priority"]>("on_track");
   const [activeDate, setActiveDate] = useState<string>(initialActiveDate ?? todayISO());
+  const [showActivePicker, setShowActivePicker] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [panel, setPanel] = useState<PanelId>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -595,14 +595,25 @@ export default function PullPlanBoard({
         });
       })(null, "");
 
+      // Re-fetch skips and current tickets/milestones fresh from the DB rather than
+      // trusting client state — this is the source of truth for what's already been
+      // imported or deliberately removed, and avoids any staleness/race issues.
+      const [{ data: freshSkips }, { data: freshTickets }, { data: freshMs }] = await Promise.all([
+        supa.from("pull_import_skips").select("task_id"),
+        supa.from("pull_tickets").select("source_task_id"),
+        supa.from("pull_milestones").select("source_task_id"),
+      ]);
+      const freshSkipSet = new Set((freshSkips ?? []).map(r => r.task_id as string));
+      setImportSkips(freshSkipSet);
+
       const alreadyImported = new Set<string>([
-        ...tickets.map(t => t.source_task_id).filter((x): x is string => !!x),
-        ...milestones.map(m => m.source_task_id).filter((x): x is string => !!x),
+        ...(freshTickets ?? []).map(t => t.source_task_id).filter((x): x is string => !!x),
+        ...(freshMs ?? []).map(m => m.source_task_id).filter((x): x is string => !!x),
       ]);
       const isLeaf = (t: Task) => (childrenOf.get(t.id) ?? []).length === 0;
       const candidates = masterTasks.filter(t =>
         isLeaf(t) && !t.is_constraint && t.start_date >= activeDate
-        && !alreadyImported.has(t.id) && !importSkips.has(t.id)
+        && !alreadyImported.has(t.id) && !freshSkipSet.has(t.id)
       );
       if (candidates.length === 0) {
         setError("Nothing new to import — all master tasks past the active line are already on the board.");
@@ -925,15 +936,6 @@ export default function PullPlanBoard({
       if (!m) return;
       const moved = movedRef.current;
 
-      if (m.kind === "line") {
-        if (moved && boardRef.current) {
-          const p = boardXY(ev);
-          // Each day-column of drag shifts the active line by a full week, not a day.
-          const deltaCols = Math.round((p.x - activeW) / dayW);
-          saveActiveDate(addDays(activeDate, deltaCols * 7));
-        }
-        return;
-      }
 
       if (m.kind === "milestone") {
         const ms = milestones.find(x => x.id === m.id);
@@ -1107,7 +1109,6 @@ export default function PullPlanBoard({
   const editingTicket = editing ? ticketMap.get(editing) ?? null : null;
 
   // Ghost line position while dragging the active line
-  const lineGhostX = drag?.kind === "line" && ghost ? ghost.x : null;
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -1295,7 +1296,7 @@ export default function PullPlanBoard({
         )}
 
         {/* Scrollable board */}
-        <div className="flex-1 overflow-auto" onWheel={onWheel}>
+        <div className="flex-1 overflow-auto" onWheel={onWheel} onClick={() => { if (showActivePicker) setShowActivePicker(false); }}>
           <div ref={boardRef} className="relative" style={{ width: totalW, height: HEADER_H + Math.max(lanesH, 200) }}>
 
             {/* ── Header ── */}
@@ -1587,16 +1588,30 @@ export default function PullPlanBoard({
               );
             })}
 
-            {/* ── Active line ── */}
+            {/* ── Active line — click to pick a date, no dragging ── */}
             <div
-              className="absolute z-30 flex cursor-ew-resize items-start justify-center"
-              style={{ left: lineGhostX !== null ? lineGhostX - LINE_W / 2 : activeW, top: 0, width: LINE_W, height: HEADER_H + Math.max(lanesH, 200), backgroundColor: "#3f3f46", opacity: lineGhostX !== null ? 0.6 : 1 }}
-              onPointerDown={e => startDrag(e, { kind: "line" })}
-              title={`Active line: ${activeDate} — drag to move`}>
+              className="absolute z-30 flex cursor-pointer items-start justify-center"
+              style={{ left: activeW, top: 0, width: LINE_W, height: HEADER_H + Math.max(lanesH, 200), backgroundColor: "#3f3f46" }}
+              onClick={() => setShowActivePicker(v => !v)}
+              title={`Active line: ${activeDate} — click to set the date`}>
               <span className="mt-3 whitespace-nowrap text-[9px] font-bold tracking-wider text-white" style={{ writingMode: "vertical-rl" }}>
                 Active {fmtShort(activeDate)}
               </span>
             </div>
+            {showActivePicker && (
+              <div className="absolute z-40 flex flex-col gap-2 rounded-lg border border-zinc-300 bg-white p-3 shadow-xl"
+                style={{ left: Math.max(0, activeW - 110), top: HEADER_H + 4 }}
+                onClick={e => e.stopPropagation()}>
+                <span className="text-xs font-semibold text-[#1A3560]">Set active line date</span>
+                <input type="date" value={activeDate} autoFocus
+                  onChange={e => { if (e.target.value) saveActiveDate(e.target.value); }}
+                  className="rounded border border-zinc-300 px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6]" />
+                <button onClick={() => setShowActivePicker(false)}
+                  className="rounded bg-[#1A3560] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#152b4e]">
+                  Done
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
