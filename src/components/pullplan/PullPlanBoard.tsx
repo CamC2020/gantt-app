@@ -61,7 +61,7 @@ const PRIORITY_RING: Record<PullConstraint["priority"], string> = {
 export default function PullPlanBoard({
   initialLanes, initialTickets, initialMilestones, initialRoles, initialDeps,
   initialMsLinks = [], initialLocations, initialSnapshots = [], initialConstraints = [], initialCLinks = [],
-  initialSupport = [], masterTasks = [], masterDeps = [], lookaheadProjectId = null,
+  initialSupport = [], masterTasks = [], masterDeps = [], masterProjectId = null, lookaheadProjectId = null,
   initialImportSkips = [],
   initialActiveDate, members, currentUserId, isAdmin,
 }: {
@@ -78,6 +78,7 @@ export default function PullPlanBoard({
   initialSupport?: PullTicketSupport[];
   masterTasks?: Task[];
   masterDeps?: TaskDependency[];
+  masterProjectId?: string | null;
   lookaheadProjectId?: string | null;
   initialImportSkips?: string[];
   initialActiveDate: string | null;
@@ -578,9 +579,30 @@ export default function PullPlanBoard({
     setImportBusy(true);
     try {
       const NO_HOL = new Set<string>();
+
+      // Re-fetch everything fresh from the DB rather than trusting client/server
+      // props — the master task list is a server-rendered prop that can go stale
+      // across client-side navigation (Next.js router cache), which was causing
+      // "nothing to import" even when new master tasks existed.
+      const TASK_COLS = "id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone, subcontractor, crew_size, role_id, is_constraint";
+      const [{ data: freshSkips }, { data: freshTickets }, { data: freshMs }, { data: freshMasterTasks }] = await Promise.all([
+        supa.from("pull_import_skips").select("task_id"),
+        supa.from("pull_tickets").select("source_task_id"),
+        supa.from("pull_milestones").select("source_task_id"),
+        masterProjectId
+          ? supa.from("tasks").select(TASK_COLS).eq("project_id", masterProjectId).order("sort_order", { ascending: true })
+          : Promise.resolve({ data: masterTasks }),
+      ]);
+      const freshMaster = (freshMasterTasks ?? masterTasks) as Task[];
+      const masterTaskIds = freshMaster.map(t => t.id);
+      const { data: freshMasterDeps } = masterTaskIds.length > 0
+        ? await supa.from("task_dependencies").select("task_id, predecessor_id, lag_days").in("task_id", masterTaskIds)
+        : { data: masterDeps };
+      const freshDeps = (freshMasterDeps ?? masterDeps) as TaskDependency[];
+
       // WBS numbering over the whole master schedule (matches the Gantt's "#")
       const childrenOf = new Map<string | null, Task[]>();
-      for (const t of masterTasks) {
+      for (const t of freshMaster) {
         const k = t.parent_id ?? null;
         if (!childrenOf.has(k)) childrenOf.set(k, []);
         childrenOf.get(k)!.push(t);
@@ -595,14 +617,6 @@ export default function PullPlanBoard({
         });
       })(null, "");
 
-      // Re-fetch skips and current tickets/milestones fresh from the DB rather than
-      // trusting client state — this is the source of truth for what's already been
-      // imported or deliberately removed, and avoids any staleness/race issues.
-      const [{ data: freshSkips }, { data: freshTickets }, { data: freshMs }] = await Promise.all([
-        supa.from("pull_import_skips").select("task_id"),
-        supa.from("pull_tickets").select("source_task_id"),
-        supa.from("pull_milestones").select("source_task_id"),
-      ]);
       const freshSkipSet = new Set((freshSkips ?? []).map(r => r.task_id as string));
       setImportSkips(freshSkipSet);
 
@@ -611,7 +625,7 @@ export default function PullPlanBoard({
         ...(freshMs ?? []).map(m => m.source_task_id).filter((x): x is string => !!x),
       ]);
       const isLeaf = (t: Task) => (childrenOf.get(t.id) ?? []).length === 0;
-      const candidates = masterTasks.filter(t =>
+      const candidates = freshMaster.filter(t =>
         isLeaf(t) && !t.is_constraint && t.start_date >= activeDate
         && !alreadyImported.has(t.id) && !freshSkipSet.has(t.id)
       );
@@ -696,7 +710,7 @@ export default function PullPlanBoard({
       // Auto-connect predecessors among imported (and previously imported) items
       const newDeps: PullTicketDep[] = [];
       const newMsLinks: Omit<PullMilestoneLink, "id">[] = [];
-      for (const d of masterDeps) {
+      for (const d of freshDeps) {
         const predT = taskToTicket.get(d.predecessor_id);
         const succT = taskToTicket.get(d.task_id);
         const predM = taskToMilestone.get(d.predecessor_id);
@@ -1432,7 +1446,7 @@ export default function PullPlanBoard({
                   <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
                     location={t.location_id ? locMap.get(t.location_id) : undefined}
                     responsible={t.responsible_id ? memberMap.get(t.responsible_id) : undefined}
-                    width={pos.w} height={ticketH} hid={isHid(t)}
+                    width={pos.w} height={ticketH} dayW={dayW} hid={isHid(t)}
                     connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id}
                     outOfSeq={outOfSeqIds.has(t.id)}
                     onToggleWeekend={canEdit(t) ? dow => patchTicket(t.id, dow === 6 ? { work_sat: !t.work_sat } : { work_sun: !t.work_sun }) : undefined} />

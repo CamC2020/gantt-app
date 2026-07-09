@@ -34,7 +34,7 @@ function fmtShort(iso: string) {
 }
 
 export default function TicketCard({
-  t, role, location, responsible, width, height, hid = false, connectFrom = false, compact = false,
+  t, role, location, responsible, width, height, dayW, hid = false, connectFrom = false, compact = false,
   outOfSeq = false, onToggleWeekend,
 }: {
   t: PullTicket;
@@ -43,6 +43,7 @@ export default function TicketCard({
   responsible: Profile | undefined;
   width?: number;
   height?: number;        // zoom-scaled ticket height
+  dayW?: number;          // active-zone pixels-per-day, for exact weekend-box alignment
   hid?: boolean;          // filtered out — render grayed "(hid)" style
   connectFrom?: boolean;  // highlighted as the source in connect mode
   compact?: boolean;      // tray rendering
@@ -67,7 +68,7 @@ export default function TicketCard({
       spanDays.push({ date: d, dow, working });
     }
   }
-  const showBoxes = spanDays.length > 1 && (width ?? 0) >= 40 && spanDays.some(d => d.dow === 0 || d.dow === 6);
+  const showBoxes = spanDays.length > 1 && (width ?? 0) >= 40 && !!dayW && spanDays.some(d => d.dow === 0 || d.dow === 6);
   const h = height ?? (compact ? 74 : TICKET_H);
 
   // Text scales with the card's height so it stays readable at any zoom level.
@@ -93,12 +94,14 @@ export default function TicketCard({
       }}
       title={`${t.description}${respName ? ` — ${respName}` : ""} · ${STATUS_LABEL[t.status]}${t.roadblock ? ` · 🚧 ${t.roadblock_note}` : ""}`}
     >
-      {/* Workday boxes strip (one box per calendar day; click weekend boxes to toggle workday) */}
+      {/* Workday boxes strip — positioned with the SAME per-day pixel width as the
+          grid (dayW), not stretched evenly, so boxes land exactly over their day
+          regardless of the ticket's own rendered width/margins. */}
       {showBoxes && (
-        <div className="absolute -top-[7px] left-0 right-0 flex gap-[2px] px-[1px]" style={{ height: 5 }}>
-          {spanDays.map(d => (
+        <div className="absolute -top-[7px] left-0" style={{ height: 5, width: spanDays.length * dayW! }}>
+          {spanDays.map((d, i) => (
             <div key={d.date}
-              className={d.dow === 0 || d.dow === 6 ? "cursor-pointer" : ""}
+              className={`absolute ${d.dow === 0 || d.dow === 6 ? "cursor-pointer" : ""}`}
               title={d.dow === 6 ? `Saturday — ${d.working ? "workday (click to remove)" : "not a workday (click to work it)"}`
                 : d.dow === 0 ? `Sunday — ${d.working ? "workday (click to remove)" : "not a workday (click to work it)"}`
                 : d.date}
@@ -110,7 +113,9 @@ export default function TicketCard({
                 }
               }}
               style={{
-                flex: 1,
+                left: i * dayW!,
+                width: dayW! - 2,
+                top: 0, height: 5,
                 borderRadius: 1,
                 // Boxes only appear over weekend days; weekday slots stay invisible
                 backgroundColor: d.dow === 0 || d.dow === 6

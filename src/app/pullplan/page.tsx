@@ -7,6 +7,8 @@ import type {
 } from "@/lib/supabase/types";
 import PullPlanBoard from "@/components/pullplan/PullPlanBoard";
 
+export const dynamic = "force-dynamic";
+
 export default async function PullPlanPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -111,6 +113,7 @@ export default async function PullPlanPage() {
         initialActiveDate={settings?.active_date ?? null}
         masterTasks={masterTasks ?? []}
         masterDeps={masterDeps ?? []}
+        masterProjectId={master?.id ?? null}
         initialImportSkips={(importSkips ?? []).map(r => r.task_id as string)}
         lookaheadProjectId={lookahead?.id ?? null}
         members={profiles ?? []}
