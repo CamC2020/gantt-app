@@ -89,6 +89,15 @@ export interface PullTicket {
   role_id: string | null;
   responsible_id: string | null;
   location: string;
+  location_id: string | null;
+  row_index: number;
+}
+
+export interface PullLocation {
+  id: string;
+  name: string;
+  color: string;
+  sort_order: number;
 }
 
 export interface PullRole {

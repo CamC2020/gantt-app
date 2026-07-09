@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import type { Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep } from "@/lib/supabase/types";
+import type {
+  Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation,
+} from "@/lib/supabase/types";
 import PullPlanBoard from "@/components/pullplan/PullPlanBoard";
 
 export default async function PullPlanPage() {
@@ -10,14 +12,15 @@ export default async function PullPlanPage() {
 
   const [
     { data: lanes }, { data: tickets }, { data: milestones },
-    { data: profiles }, { data: roles }, { data: deps }, { data: settings },
+    { data: profiles }, { data: roles }, { data: deps },
+    { data: locations }, { data: settings },
   ] = await Promise.all([
     supabase.from("pull_lanes")
       .select("id, name, sort_order")
       .order("sort_order", { ascending: true })
       .returns<PullLane[]>(),
     supabase.from("pull_tickets")
-      .select("id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location")
+      .select("id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index")
       .order("sort_order", { ascending: true })
       .returns<PullTicket[]>(),
     supabase.from("pull_milestones")
@@ -35,6 +38,10 @@ export default async function PullPlanPage() {
     supabase.from("pull_ticket_deps")
       .select("ticket_id, predecessor_id")
       .returns<PullTicketDep[]>(),
+    supabase.from("pull_locations")
+      .select("id, name, color, sort_order")
+      .order("sort_order", { ascending: true })
+      .returns<PullLocation[]>(),
     supabase.from("pull_settings")
       .select("active_date")
       .eq("id", 1)
@@ -44,12 +51,9 @@ export default async function PullPlanPage() {
   const myProfile = (profiles ?? []).find(p => p.id === user.id);
 
   return (
-    <div className="mx-auto flex w-full max-w-full flex-col gap-4 px-6 py-8">
-      <div className="flex flex-col gap-1">
+    <div className="flex w-full max-w-full flex-col gap-3 px-4 py-6">
+      <div className="flex flex-col gap-1 px-2">
         <h1 className="text-2xl font-bold text-[#1A3560]">Pull Plan</h1>
-        <p className="text-sm text-slate-500">
-          Collaborative pull planning board — add tickets, connect predecessors, promise your work, and mark it complete.
-        </p>
       </div>
       <PullPlanBoard
         initialLanes={lanes ?? []}
@@ -57,6 +61,7 @@ export default async function PullPlanPage() {
         initialMilestones={milestones ?? []}
         initialRoles={roles ?? []}
         initialDeps={deps ?? []}
+        initialLocations={locations ?? []}
         initialActiveDate={settings?.active_date ?? null}
         members={profiles ?? []}
         currentUserId={user.id}
