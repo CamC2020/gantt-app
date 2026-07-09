@@ -5,22 +5,27 @@ import type { Profile, PullLane, PullTicket, PullRole, PullLocation, PullTicketS
 import { VARIANCE_REASONS } from "@/lib/supabase/types";
 import { STATUS_LABEL } from "./TicketCard";
 
+export interface TicketConnection {
+  key: string;
+  label: string;
+  kind: "predecessor" | "successor" | "milestone" | "constraint";
+}
+
 export default function TicketModal({
-  ticket, lanes, roles, locations, members, allTickets, predIds, editable,
+  ticket, lanes, roles, locations, members, connections, editable,
   completionOutcome = "done_ontime",
-  onPatch, onSetDeps, onPromise, onStart, onComplete, onDelete, onClose,
+  onPatch, onRemoveConnection, onPromise, onStart, onComplete, onDelete, onClose,
 }: {
   ticket: PullTicket;
   lanes: PullLane[];
   roles: PullRole[];
   locations: PullLocation[];
   members: Profile[];
-  allTickets: PullTicket[];
-  predIds: string[];
+  connections: TicketConnection[];
   editable: boolean;
   completionOutcome?: PullTicketStatus; // what completing right now would be scored as
   onPatch: (patch: Partial<PullTicket>) => void;
-  onSetDeps: (predIds: string[]) => void;
+  onRemoveConnection: (key: string) => void;
   onPromise: () => void;
   onStart: () => void;
   onComplete: (varianceReason?: string, varianceNote?: string) => void;
@@ -40,14 +45,12 @@ export default function TicketModal({
   const [rbNeedBy, setRbNeedBy] = useState(ticket.roadblock_need_by ?? "");
   const [rbPriority, setRbPriority] = useState(ticket.roadblock_priority);
   const [notes, setNotes] = useState(ticket.notes);
-  const [preds, setPreds] = useState<string[]>(predIds);
   // Variance prompt shown when completing early/late
   const [completing, setCompleting] = useState(false);
   const [varReason, setVarReason] = useState("");
   const [varNote, setVarNote] = useState("");
 
   const isDone = ticket.status.startsWith("done_");
-  const candidates = allTickets.filter(t => t.id !== ticket.id);
   const needsVariance = completionOutcome !== "done_ontime";
 
   function save() {
@@ -66,7 +69,6 @@ export default function TicketModal({
       roadblock_priority: rb ? rbPriority : "on_track",
       notes,
     });
-    onSetDeps(preds);
     onClose();
   }
 
@@ -76,9 +78,12 @@ export default function TicketModal({
     onComplete(varReason || "", varNote.trim());
   }
 
-  function togglePred(id: string) {
-    setPreds(prev => (prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]));
-  }
+  const KIND_LABEL: Record<TicketConnection["kind"], string> = {
+    predecessor: "← after",
+    successor: "→ before",
+    milestone: "◆ milestone",
+    constraint: "⚠ constraint",
+  };
 
   const inputCls = "rounded border border-zinc-300 px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6] disabled:bg-zinc-50";
 
@@ -146,15 +151,18 @@ export default function TicketModal({
           </div>
 
           <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-zinc-500">Predecessors (work that must finish first)</span>
-            {candidates.length === 0 ? (
-              <span className="text-xs italic text-zinc-400">No other tickets yet.</span>
+            <span className="text-xs font-medium text-zinc-500">Connections (uncheck to remove — add new ones with 🔗 Connect on the board)</span>
+            {connections.length === 0 ? (
+              <span className="text-xs italic text-zinc-400">Nothing connected yet. Use 🔗 Connect mode on the board.</span>
             ) : (
               <div className="max-h-36 overflow-y-auto rounded border border-zinc-200 p-2">
-                {candidates.map(c => (
-                  <label key={c.id} className="flex items-center gap-2 py-0.5 text-xs text-zinc-700">
-                    <input type="checkbox" checked={preds.includes(c.id)} onChange={() => togglePred(c.id)} disabled={!editable} />
-                    <span className="truncate">{c.description}{c.start_date ? ` (${c.start_date})` : " (tray)"}</span>
+                {connections.map(c => (
+                  <label key={c.key} className="flex items-center gap-2 py-0.5 text-xs text-zinc-700">
+                    <input type="checkbox" checked
+                      onChange={() => { if (confirm(`Remove connection to “${c.label}”?`)) onRemoveConnection(c.key); }}
+                      disabled={!editable} />
+                    <span className="w-20 shrink-0 text-[10px] font-semibold text-zinc-400">{KIND_LABEL[c.kind]}</span>
+                    <span className="truncate">{c.label}</span>
                   </label>
                 ))}
               </div>

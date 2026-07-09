@@ -291,17 +291,6 @@ export default function PullPlanBoard({
     await supa.from("pull_tickets").delete().eq("id", id);
   }
 
-  async function setTicketDeps(id: string, predIds: string[]) {
-    setDeps(prev => [
-      ...prev.filter(d => d.ticket_id !== id),
-      ...predIds.map(p => ({ ticket_id: id, predecessor_id: p })),
-    ]);
-    await supa.from("pull_ticket_deps").delete().eq("ticket_id", id);
-    if (predIds.length > 0) {
-      await supa.from("pull_ticket_deps").insert(predIds.map(p => ({ ticket_id: id, predecessor_id: p })));
-    }
-  }
-
   async function addDep(ticketId: string, predId: string) {
     if (ticketId === predId) return;
     if (deps.some(d => d.ticket_id === ticketId && d.predecessor_id === predId)) return;
@@ -1254,11 +1243,37 @@ export default function PullPlanBoard({
           roles={roles}
           locations={locations}
           members={members}
-          allTickets={tickets}
-          predIds={deps.filter(d => d.ticket_id === editingTicket.id).map(d => d.predecessor_id)}
+          connections={[
+            ...deps.filter(d => d.ticket_id === editingTicket.id).map(d => ({
+              key: `pred:${d.predecessor_id}`,
+              label: ticketMap.get(d.predecessor_id)?.description ?? "?",
+              kind: "predecessor" as const,
+            })),
+            ...deps.filter(d => d.predecessor_id === editingTicket.id).map(d => ({
+              key: `succ:${d.ticket_id}`,
+              label: ticketMap.get(d.ticket_id)?.description ?? "?",
+              kind: "successor" as const,
+            })),
+            ...msLinks.filter(l => l.ticket_id === editingTicket.id).map(l => ({
+              key: `ms:${l.id}`,
+              label: milestones.find(m => m.id === l.milestone_id)?.label ?? "?",
+              kind: "milestone" as const,
+            })),
+            ...cLinks.filter(l => l.ticket_id === editingTicket.id).map(l => ({
+              key: `c:${l.id}`,
+              label: constraints.find(c => c.id === l.constraint_id)?.description ?? "?",
+              kind: "constraint" as const,
+            })),
+          ]}
           editable={canEdit(editingTicket)}
           onPatch={patch => patchTicket(editingTicket.id, patch)}
-          onSetDeps={ids => setTicketDeps(editingTicket.id, ids)}
+          onRemoveConnection={key => {
+            const [type, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+            if (type === "pred") removeDep(editingTicket.id, id);
+            else if (type === "succ") removeDep(id, editingTicket.id);
+            else if (type === "ms") removeMsLink(id);
+            else if (type === "c") removeCLink(id);
+          }}
           onPromise={() => promiseTicket(editingTicket)}
           onStart={() => patchTicket(editingTicket.id, { status: "in_progress" })}
           completionOutcome={completionOutcome(editingTicket)}
