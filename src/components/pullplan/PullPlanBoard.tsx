@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/client";
 import type {
   Profile, PullLane, PullTicket, PullMilestone, PullTicketStatus,
   PullRole, PullTicketDep, PullLocation, PullMilestoneLink, PullSnapshot, PullSnapshotData,
+  PullConstraint, PullConstraintLink,
 } from "@/lib/supabase/types";
 import { addDays, diffInDays, formatISODate, parseISODate, todayISO } from "@/lib/date";
 import TicketCard, { ticketEnd } from "./TicketCard";
@@ -48,12 +49,20 @@ function fmtShort(iso: string) {
 type DragMode =
   | { kind: "ticket"; id: string; grabX: number; grabY: number }
   | { kind: "milestone"; id: string }
+  | { kind: "constraint"; id: string }
   | { kind: "resize"; id: string }
   | { kind: "line" };
 
+const PRIORITY_RING: Record<PullConstraint["priority"], string> = {
+  on_track: "#9ca3af",
+  needs_attention: "#f59e0b",
+  critical: "#dc2626",
+};
+
 export default function PullPlanBoard({
   initialLanes, initialTickets, initialMilestones, initialRoles, initialDeps,
-  initialMsLinks = [], initialLocations, initialSnapshots = [], initialActiveDate, members, currentUserId, isAdmin,
+  initialMsLinks = [], initialLocations, initialSnapshots = [], initialConstraints = [], initialCLinks = [],
+  initialActiveDate, members, currentUserId, isAdmin,
 }: {
   initialLanes: PullLane[];
   initialTickets: PullTicket[];
@@ -63,6 +72,8 @@ export default function PullPlanBoard({
   initialMsLinks?: PullMilestoneLink[];
   initialLocations: PullLocation[];
   initialSnapshots?: PullSnapshot[];
+  initialConstraints?: PullConstraint[];
+  initialCLinks?: PullConstraintLink[];
   initialActiveDate: string | null;
   members: Profile[];
   currentUserId: string;
@@ -77,12 +88,19 @@ export default function PullPlanBoard({
   const [msLinks, setMsLinks] = useState<PullMilestoneLink[]>(initialMsLinks);
   const [snapshots, setSnapshots] = useState<PullSnapshot[]>(initialSnapshots);
   const [snapBusy, setSnapBusy] = useState(false);
+  const [constraints, setConstraints] = useState<PullConstraint[]>(initialConstraints);
+  const [cLinks, setCLinks] = useState<PullConstraintLink[]>(initialCLinks);
+  const [editingConstraint, setEditingConstraint] = useState<string | null>(null);
+  const [showCForm, setShowCForm] = useState(false);
+  const [cDesc, setCDesc] = useState("");
+  const [cNeedBy, setCNeedBy] = useState("");
+  const [cPriority, setCPriority] = useState<PullConstraint["priority"]>("on_track");
   const [activeDate, setActiveDate] = useState<string>(initialActiveDate ?? todayISO());
   const [zoom, setZoom] = useState(1);
   const [panel, setPanel] = useState<PanelId>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [connectMode, setConnectMode] = useState(false);
-  const [connectFrom, setConnectFrom] = useState<{ kind: "ticket" | "milestone"; id: string } | null>(null);
+  const [connectFrom, setConnectFrom] = useState<{ kind: "ticket" | "milestone" | "constraint"; id: string } | null>(null);
   const [filters, setFilters] = useState<Filters>({ roleIds: new Set(), memberIds: new Set(), locationIds: new Set() });
   const [showLaneForm, setShowLaneForm] = useState(false);
   const [newLaneName, setNewLaneName] = useState("");
@@ -178,9 +196,11 @@ export default function PullPlanBoard({
     return lanes.map((lane, idx) => {
       const list = tickets.filter(t => t.lane_id === lane.id && t.start_date);
       const laneMs = milestones.filter(m => m.lane_id === lane.id && m.date);
+      const laneCs = constraints.filter(c => c.lane_id === lane.id && c.date);
       const maxRow = Math.max(
         list.reduce((m, t) => Math.max(m, t.row_index), 0),
-        laneMs.reduce((m, x) => Math.max(m, x.row_index), 0)
+        laneMs.reduce((m, x) => Math.max(m, x.row_index), 0),
+        laneCs.reduce((m, x) => Math.max(m, x.row_index), 0)
       );
       const rows = Math.max(2, maxRow + 2); // spare row at the bottom for dropping
       const height = rows * (ticketH + LANE_PAD) + LANE_PAD;
@@ -188,7 +208,7 @@ export default function PullPlanBoard({
       top += height;
       return layout;
     });
-  }, [lanes, tickets, milestones, ticketH]);
+  }, [lanes, tickets, milestones, constraints, ticketH]);
   const lanesH = laneLayouts.reduce((a, l) => a + l.height, 0);
 
   const ticketPos = useMemo(() => {
@@ -224,6 +244,24 @@ export default function PullPlanBoard({
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [milestones, laneLayouts, dayW, weekW, activeDate, ticketH, msSize]);
+
+  // Constraint circle centers (same placement rules as milestones)
+  const cPos = useMemo(() => {
+    const map = new Map<string, { cx: number; cy: number }>();
+    for (const c of constraints) {
+      if (!c.date) continue;
+      const cx = xForDate(c.date) + dayW / 2;
+      const ll = c.lane_id ? laneLayouts.find(l => l.lane.id === c.lane_id) : undefined;
+      if (ll) {
+        const row = Math.min(ll.rows - 1, c.row_index);
+        map.set(c.id, { cx, cy: ll.top + LANE_PAD + row * (ticketH + LANE_PAD) + ticketH / 2 });
+      } else {
+        map.set(c.id, { cx, cy: 14 + msSize / 2 });
+      }
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [constraints, laneLayouts, dayW, weekW, activeDate, ticketH, msSize]);
 
   // ── DB helpers ──────────────────────────────────────────────────────────────
   async function patchTicket(id: string, patch: Partial<PullTicket>) {
@@ -324,6 +362,47 @@ export default function PullPlanBoard({
     setMilestones(prev => prev.map(m => (m.id === id ? { ...m, ...patch } : m)));
     const { error: err } = await supa.from("pull_milestones").update(patch).eq("id", id);
     if (err) setError(err.message);
+  }
+
+  // ── Constraints (first-class circle tickets) ────────────────────────────────
+  async function addConstraint() {
+    if (!cDesc.trim()) return;
+    const { data, error: err } = await supa.from("pull_constraints")
+      .insert({ description: cDesc.trim(), need_by: cNeedBy || null, priority: cPriority })
+      .select("id, description, lane_id, date, row_index, need_by, priority, responsible_id, note, resolved")
+      .single();
+    if (err) { setError(err.message); return; }
+    if (data) setConstraints(prev => [...prev, data as PullConstraint]);
+    setCDesc(""); setCNeedBy(""); setCPriority("on_track"); setShowCForm(false);
+  }
+
+  async function patchConstraint(id: string, patch: Partial<PullConstraint>) {
+    setConstraints(prev => prev.map(c => (c.id === id ? { ...c, ...patch } : c)));
+    const { error: err } = await supa.from("pull_constraints").update(patch).eq("id", id);
+    if (err) setError(err.message);
+  }
+
+  async function deleteConstraint(id: string) {
+    setConstraints(prev => prev.filter(c => c.id !== id));
+    setCLinks(prev => prev.filter(l => l.constraint_id !== id));
+    setEditingConstraint(null);
+    await supa.from("pull_constraints").delete().eq("id", id);
+  }
+
+  async function addCLink(constraintId: string, ticketId: string) {
+    if (cLinks.some(l => l.constraint_id === constraintId && l.ticket_id === ticketId)) return;
+    const tempId = `tmp-${Date.now()}`;
+    setCLinks(prev => [...prev, { id: tempId, constraint_id: constraintId, ticket_id: ticketId }]);
+    const { data, error: err } = await supa.from("pull_constraint_links")
+      .insert({ constraint_id: constraintId, ticket_id: ticketId })
+      .select("id, constraint_id, ticket_id").single();
+    if (err) { setError(err.message); setCLinks(prev => prev.filter(l => l.id !== tempId)); return; }
+    if (data) setCLinks(prev => prev.map(l => (l.id === tempId ? (data as PullConstraintLink) : l)));
+  }
+
+  async function removeCLink(id: string) {
+    setCLinks(prev => prev.filter(l => l.id !== id));
+    await supa.from("pull_constraint_links").delete().eq("id", id);
   }
 
   async function removeMilestone(id: string) {
@@ -539,6 +618,28 @@ export default function PullPlanBoard({
         return;
       }
 
+      if (m.kind === "constraint") {
+        const c = constraints.find(x => x.id === m.id);
+        if (!c) return;
+        if (!moved) { handleConstraintClick(c); return; }
+        if (trayRef.current) {
+          const tr = trayRef.current.getBoundingClientRect();
+          if (ev.clientX >= tr.left && ev.clientX <= tr.right && ev.clientY >= tr.top && ev.clientY <= tr.bottom) {
+            await patchConstraint(c.id, { date: null, lane_id: null, row_index: 0 });
+            return;
+          }
+        }
+        if (!boardRef.current) return;
+        const p = boardXY(ev);
+        const laneY = p.y - HEADER_H;
+        const ll = laneLayouts.find(l => laneY >= l.top && laneY < l.top + l.height);
+        const date = dateForX(Math.max(0, p.x - dayW / 2));
+        if (!ll) { await patchConstraint(c.id, { date, lane_id: null }); return; }
+        const row = Math.min(ll.rows - 1, Math.max(0, Math.floor((laneY - ll.top - LANE_PAD) / (ticketH + LANE_PAD))));
+        await patchConstraint(c.id, { date, lane_id: ll.lane.id, row_index: row });
+        return;
+      }
+
       const t = ticketMap.get(m.id);
       if (!t) return;
 
@@ -581,6 +682,7 @@ export default function PullPlanBoard({
       if (!connectFrom) { setConnectFrom({ kind: "ticket", id: t.id }); return; }
       if (connectFrom.kind === "ticket" && connectFrom.id !== t.id) addDep(t.id, connectFrom.id);
       if (connectFrom.kind === "milestone") addMsLink(t.id, connectFrom.id, false); // milestone → ticket
+      if (connectFrom.kind === "constraint") addCLink(connectFrom.id, t.id);        // constraint blocks ticket
       setConnectFrom(null);
       return;
     }
@@ -592,6 +694,16 @@ export default function PullPlanBoard({
     if (!connectFrom) { setConnectFrom({ kind: "milestone", id: m.id }); return; }
     if (connectFrom.kind === "ticket") addMsLink(connectFrom.id, m.id, true); // ticket → milestone
     setConnectFrom(null);
+  }
+
+  function handleConstraintClick(c: PullConstraint) {
+    if (connectMode) {
+      if (!connectFrom) { setConnectFrom({ kind: "constraint", id: c.id }); return; }
+      if (connectFrom.kind === "ticket") addCLink(c.id, connectFrom.id); // constraint blocks that ticket
+      setConnectFrom(null);
+      return;
+    }
+    setEditingConstraint(c.id);
   }
 
   // Out of sequence: a ticket that starts on/before a predecessor's end,
@@ -617,8 +729,15 @@ export default function PullPlanBoard({
         if (t.start_date <= m.date) bad.add(t.id);
       }
     }
+    for (const l of cLinks) {
+      const t = ticketMap.get(l.ticket_id);
+      const c = constraints.find(x => x.id === l.constraint_id);
+      if (!t?.start_date || !c || c.resolved) continue;
+      // blocked ticket starts before the constraint's planned resolution
+      if (c.date && t.start_date <= c.date) bad.add(t.id);
+    }
     return bad;
-  }, [deps, msLinks, ticketMap, milestones]);
+  }, [deps, msLinks, cLinks, ticketMap, milestones, constraints]);
 
   // Esc exits connect mode
   useEffect(() => {
@@ -669,6 +788,8 @@ export default function PullPlanBoard({
           className="rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50">+ Swimlane</button>
         <button onClick={() => setShowMsForm(v => !v)}
           className="rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50">+ Milestone</button>
+        <button onClick={() => setShowCForm(v => !v)}
+          className="rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50">+ Constraint</button>
         <button onClick={() => { setConnectMode(v => !v); setConnectFrom(null); }}
           className={`rounded border px-3 py-1.5 text-sm ${connectMode ? "border-[#1A3560] bg-[#1A3560] text-white" : "border-zinc-300 text-zinc-700 hover:bg-zinc-50"}`}
           title="Connect mode: click a predecessor ticket, then its successor">
@@ -713,6 +834,26 @@ export default function PullPlanBoard({
           <button onClick={addMilestone} className="rounded bg-[#1A3560] px-3 py-1.5 text-sm text-white">Add</button>
         </div>
       )}
+      {showCForm && (
+        <div className="flex flex-wrap items-center gap-2 px-1">
+          <input value={cDesc} onChange={e => setCDesc(e.target.value)} placeholder="Constraint (e.g. RFI #12, submittal, material)" autoFocus
+            onKeyDown={e => e.key === "Enter" && addConstraint()}
+            className="w-72 rounded border border-zinc-300 px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6]" />
+          <label className="flex items-center gap-1 text-xs text-zinc-500">
+            need by
+            <input type="date" value={cNeedBy} onChange={e => setCNeedBy(e.target.value)}
+              className="rounded border border-zinc-300 px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6]" />
+          </label>
+          <select value={cPriority} onChange={e => setCPriority(e.target.value as PullConstraint["priority"])}
+            className="rounded border border-zinc-300 px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6]">
+            <option value="on_track">On Track</option>
+            <option value="needs_attention">Needs Attention</option>
+            <option value="critical">Critical</option>
+          </select>
+          <button onClick={addConstraint} className="rounded bg-[#1A3560] px-3 py-1.5 text-sm text-white">Add</button>
+          <span className="text-[10px] text-zinc-400">added to the tray — drag it onto the board</span>
+        </div>
+      )}
 
       {/* ── Ticket tray ── */}
       <div ref={trayRef}
@@ -741,6 +882,20 @@ export default function PullPlanBoard({
             <span className="relative px-1 text-center text-[8px] font-bold leading-tight text-zinc-800">{m.label}</span>
           </div>
         ))}
+        {/* Tray constraints (circles) */}
+        {constraints.filter(c => !c.date).map(c => (
+          <div key={c.id}
+            className="relative flex h-[64px] w-[64px] cursor-grab items-center justify-center"
+            style={{ touchAction: "none" }}
+            onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
+            title={`Constraint: ${c.description}${c.need_by ? ` — need by ${c.need_by}` : ""} (drag onto the board, click to edit)`}>
+            <div className="absolute inset-1 rounded-full border-2 bg-zinc-300 shadow"
+              style={{ borderColor: PRIORITY_RING[c.priority] }} />
+            <span className="relative px-1.5 text-center text-[8px] font-bold leading-tight text-zinc-800">
+              ⚠ {c.description.length > 24 ? c.description.slice(0, 24) + "…" : c.description}
+            </span>
+          </div>
+        ))}
       </div>
 
       {/* ── Sidebar + Board ── */}
@@ -749,7 +904,8 @@ export default function PullPlanBoard({
 
         {panel === "constraints" && (
           <PanelShell title="Constraints" onClose={() => setPanel(null)}>
-            <ConstraintsPanel tickets={tickets} onOpen={id => setEditing(id)} />
+            <ConstraintsPanel tickets={tickets} constraints={constraints}
+              onOpen={id => setEditing(id)} onOpenConstraint={id => setEditingConstraint(id)} />
           </PanelShell>
         )}
         {panel === "members" && (
@@ -910,6 +1066,9 @@ export default function PullPlanBoard({
                   <marker id="pp-arr-red" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
                     <path d="M0,0 L7,3.5 L0,7 z" fill="#dc2626" />
                   </marker>
+                  <marker id="pp-arr-amber" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+                    <path d="M0,0 L7,3.5 L0,7 z" fill="#f59e0b" />
+                  </marker>
                 </defs>
                 {deps.map(dep => {
                   const from = ticketPos.get(dep.predecessor_id);
@@ -928,6 +1087,26 @@ export default function PullPlanBoard({
                         onClick={() => { if (confirm("Remove this connection?")) removeDep(dep.ticket_id, dep.predecessor_id); }} />
                       <path d={d} fill="none" stroke={bad ? "#dc2626" : "#2E6EA6"} strokeWidth={bad ? 2.2 : 1.8}
                         markerEnd={bad ? "url(#pp-arr-red)" : "url(#pp-arr)"} opacity={0.85} />
+                    </g>
+                  );
+                })}
+                {cLinks.map(l => {
+                  const c = constraints.find(x => x.id === l.constraint_id);
+                  const tp = ticketPos.get(l.ticket_id);
+                  const t = ticketMap.get(l.ticket_id);
+                  const cp = c ? cPos.get(c.id) : undefined;
+                  if (!c || !c.date || !cp || !tp || !t) return null;
+                  const bad = !c.resolved && !!t.start_date && !!c.date && t.start_date <= c.date;
+                  const x1 = cp.cx + msSize / 2 + 2, y1 = cp.cy;
+                  const x2 = tp.x, y2 = tp.y + ticketH / 2;
+                  const bez = Math.max(16, Math.min(50, (x2 - x1) / 2));
+                  const d = `M ${x1} ${y1} C ${x1 + bez} ${y1}, ${x2 - bez} ${y2}, ${x2 - 2} ${y2}`;
+                  return (
+                    <g key={l.id}>
+                      <path d={d} fill="none" stroke="transparent" strokeWidth="10" style={{ pointerEvents: "stroke", cursor: "pointer" }}
+                        onClick={() => { if (confirm("Remove this constraint connection?")) removeCLink(l.id); }} />
+                      <path d={d} fill="none" stroke={bad ? "#dc2626" : "#f59e0b"} strokeWidth={bad ? 2.2 : 1.8}
+                        strokeDasharray="5 3" markerEnd={bad ? "url(#pp-arr-red)" : "url(#pp-arr-amber)"} opacity={c.resolved ? 0.35 : 0.85} />
                     </g>
                   );
                 })}
@@ -988,6 +1167,36 @@ export default function PullPlanBoard({
               );
             })}
 
+            {/* ── Constraints (circles) ── */}
+            {constraints.map(c => {
+              if (!c.date) return null;
+              const pos = cPos.get(c.id);
+              if (!pos || c.date > boardEnd) return null;
+              const size = msSize;
+              const isFrom = connectFrom?.kind === "constraint" && connectFrom.id === c.id;
+              const dragging = drag?.kind === "constraint" && drag.id === c.id && ghost;
+              const left = dragging ? ghost!.x - size / 2 : pos.cx - size / 2;
+              const top = dragging ? ghost!.y - size / 2 : HEADER_H + pos.cy - size / 2;
+              const overdue = !c.resolved && c.need_by && c.need_by < today;
+              return (
+                <div key={c.id}
+                  className={`absolute flex items-center justify-center ${dragging ? "z-40 opacity-80" : "z-20"} ${connectMode ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
+                  style={{ left, top, width: size, height: size, touchAction: "none", opacity: c.resolved ? 0.55 : undefined }}
+                  onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
+                  title={`Constraint: ${c.description}${c.need_by ? ` — need by ${c.need_by}` : ""}${c.resolved ? " (resolved)" : ""}${connectMode ? " (click to connect)" : ""}`}>
+                  <div className="absolute inset-0 rounded-full border-2 bg-zinc-300 shadow-md"
+                    style={{
+                      borderColor: overdue ? "#dc2626" : PRIORITY_RING[c.priority],
+                      outline: isFrom ? "3px solid #1A3560" : overdue ? "2px solid #dc2626" : undefined,
+                    }} />
+                  <span className="relative px-1.5 text-center font-bold leading-tight text-zinc-800"
+                    style={{ fontSize: Math.max(7, Math.round(8 * zoom)) }}>
+                    {c.resolved ? "✓ " : "⚠ "}{c.description}
+                  </span>
+                </div>
+              );
+            })}
+
             {/* ── Active line ── */}
             <div
               className="absolute z-30 flex cursor-ew-resize items-start justify-center"
@@ -1019,6 +1228,23 @@ export default function PullPlanBoard({
         </span>
       </div>
 
+      {/* ── Constraint edit modal ── */}
+      {editingConstraint && (() => {
+        const c = constraints.find(x => x.id === editingConstraint);
+        if (!c) return null;
+        return (
+          <ConstraintModal
+            key={c.id}
+            constraint={c}
+            lanes={lanes}
+            members={members}
+            onPatch={patch => patchConstraint(c.id, patch)}
+            onDelete={() => deleteConstraint(c.id)}
+            onClose={() => setEditingConstraint(null)}
+          />
+        );
+      })()}
+
       {/* ── Edit modal ── */}
       {editingTicket && (
         <TicketModal
@@ -1041,6 +1267,121 @@ export default function PullPlanBoard({
           onClose={() => setEditing(null)}
         />
       )}
+    </div>
+  );
+}
+
+// ─── Constraint edit modal ─────────────────────────────────────────────────────
+function ConstraintModal({
+  constraint, lanes, members, onPatch, onDelete, onClose,
+}: {
+  constraint: PullConstraint;
+  lanes: PullLane[];
+  members: Profile[];
+  onPatch: (patch: Partial<PullConstraint>) => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const [desc, setDesc] = useState(constraint.description);
+  const [needBy, setNeedBy] = useState(constraint.need_by ?? "");
+  const [priority, setPriority] = useState(constraint.priority);
+  const [respId, setRespId] = useState(constraint.responsible_id ?? "");
+  const [date, setDate] = useState(constraint.date ?? "");
+  const [laneId, setLaneId] = useState(constraint.lane_id ?? "");
+  const [note, setNote] = useState(constraint.note);
+
+  const inputCls = "rounded border border-zinc-300 px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6]";
+
+  function save() {
+    onPatch({
+      description: desc.trim() || "Untitled constraint",
+      need_by: needBy || null,
+      priority,
+      responsible_id: respId || null,
+      date: date || null,
+      lane_id: date ? (laneId || null) : null,
+      note,
+    });
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-bold text-[#1A3560]">⚠ Constraint</h2>
+          <span className={`text-[11px] font-semibold ${constraint.resolved ? "text-green-600" : "text-amber-600"}`}>
+            {constraint.resolved ? "Resolved" : "Open"}
+          </span>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-500">Description</span>
+            <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} className={inputCls} />
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-zinc-500">Need resolved by</span>
+              <input type="date" value={needBy} onChange={e => setNeedBy(e.target.value)} className={inputCls} />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-zinc-500">Priority</span>
+              <select value={priority} onChange={e => setPriority(e.target.value as PullConstraint["priority"])} className={inputCls}>
+                <option value="on_track">On Track</option>
+                <option value="needs_attention">Needs Attention</option>
+                <option value="critical">Critical</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-zinc-500">Planned resolution date</span>
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} className={inputCls} />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-zinc-500">Swimlane</span>
+              <select value={laneId} onChange={e => setLaneId(e.target.value)} className={inputCls}>
+                <option value="">— tray / top —</option>
+                {lanes.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-500">Responsible</span>
+            <select value={respId} onChange={e => setRespId(e.target.value)} className={inputCls}>
+              <option value="">— unassigned —</option>
+              {members.map(m => <option key={m.id} value={m.id}>{m.full_name || m.email}</option>)}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-zinc-500">Notes / status updates</span>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} className={inputCls} />
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {!constraint.resolved ? (
+            <button onClick={() => { onPatch({ resolved: true }); onClose(); }}
+              className="rounded bg-[#2A6B35] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#235a2c]">
+              ✓ Mark Resolved
+            </button>
+          ) : (
+            <button onClick={() => { onPatch({ resolved: false }); onClose(); }}
+              className="rounded border border-amber-400 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-50">
+              Reopen
+            </button>
+          )}
+          <span className="flex-1" />
+          <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-600">Delete</button>
+          <button onClick={onClose} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50">Cancel</button>
+          <button onClick={save} className="rounded bg-[#1A3560] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#152b4e]">Save</button>
+        </div>
+      </div>
     </div>
   );
 }

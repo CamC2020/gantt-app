@@ -1,7 +1,7 @@
 "use client";
 
 import PullPlanBoard from "@/components/pullplan/PullPlanBoard";
-import type { Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation, PullMilestoneLink } from "@/lib/supabase/types";
+import type { Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation, PullMilestoneLink, PullConstraint, PullConstraintLink } from "@/lib/supabase/types";
 import { addDays, formatISODate } from "@/lib/date";
 
 const today = formatISODate(new Date());
@@ -78,6 +78,17 @@ const milestones: PullMilestone[] = [
   { id: "m2", label: "Substantial Completion", date: null, lane_id: null, row_index: 0 },
 ];
 
+const constraints: PullConstraint[] = [
+  { id: "c1", description: "BC Hydro service approval", lane_id: "s1", date: addDays(today, 6), row_index: 1,
+    need_by: addDays(today, 5), priority: "critical", responsible_id: "u1", note: "Application submitted", resolved: false },
+  { id: "c2", description: "Rebar shop drawings", lane_id: null, date: null, row_index: 0,
+    need_by: addDays(today, 14), priority: "on_track", responsible_id: "u2", note: "", resolved: false },
+];
+
+const cLinks: PullConstraintLink[] = [
+  { id: "cl1", constraint_id: "c1", ticket_id: "t6" },
+];
+
 const msLinks: PullMilestoneLink[] = [
   { id: "ml1", ticket_id: "t8", milestone_id: "m1", ticket_is_pred: true }, // curb & gutter → milestone (violated → red)
 ];
@@ -92,6 +103,8 @@ export default function PullPlanPreview() {
         initialRoles={roles}
         initialDeps={deps}
         initialMsLinks={msLinks}
+        initialConstraints={constraints}
+        initialCLinks={cLinks}
         initialLocations={locations}
         initialActiveDate={today}
         members={members}

@@ -100,6 +100,25 @@ export interface PullTicket {
   roadblock_priority: "on_track" | "needs_attention" | "critical";
 }
 
+export interface PullConstraint {
+  id: string;
+  description: string;
+  lane_id: string | null;
+  date: string | null;    // planned resolution date; null = tray
+  row_index: number;
+  need_by: string | null;
+  priority: "on_track" | "needs_attention" | "critical";
+  responsible_id: string | null;
+  note: string;
+  resolved: boolean;
+}
+
+export interface PullConstraintLink {
+  id: string;
+  constraint_id: string;
+  ticket_id: string;
+}
+
 export interface PullSnapshotData {
   lanes: PullLane[];
   tickets: PullTicket[];

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import type {
   Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation, PullMilestoneLink, PullSnapshot,
+  PullConstraint, PullConstraintLink,
 } from "@/lib/supabase/types";
 import PullPlanBoard from "@/components/pullplan/PullPlanBoard";
 
@@ -14,6 +15,7 @@ export default async function PullPlanPage() {
     { data: lanes }, { data: tickets }, { data: milestones },
     { data: profiles }, { data: roles }, { data: deps },
     { data: locations }, { data: settings }, { data: msLinks }, { data: snapshots },
+    { data: constraints }, { data: cLinks },
   ] = await Promise.all([
     supabase.from("pull_lanes")
       .select("id, name, sort_order")
@@ -53,6 +55,12 @@ export default async function PullPlanPage() {
       .select("id, name, created_by, data, created_at")
       .order("created_at", { ascending: false })
       .returns<PullSnapshot[]>(),
+    supabase.from("pull_constraints")
+      .select("id, description, lane_id, date, row_index, need_by, priority, responsible_id, note, resolved")
+      .returns<PullConstraint[]>(),
+    supabase.from("pull_constraint_links")
+      .select("id, constraint_id, ticket_id")
+      .returns<PullConstraintLink[]>(),
   ]);
 
   const myProfile = (profiles ?? []).find(p => p.id === user.id);
@@ -71,6 +79,8 @@ export default async function PullPlanPage() {
         initialMsLinks={msLinks ?? []}
         initialLocations={locations ?? []}
         initialSnapshots={snapshots ?? []}
+        initialConstraints={constraints ?? []}
+        initialCLinks={cLinks ?? []}
         initialActiveDate={settings?.active_date ?? null}
         members={profiles ?? []}
         currentUserId={user.id}
