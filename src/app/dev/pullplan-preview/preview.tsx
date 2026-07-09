@@ -72,7 +72,8 @@ const deps: PullTicketDep[] = [
 ];
 
 const milestones: PullMilestone[] = [
-  { id: "m1", label: "Ready for Paving", date: addDays(today, 27) },
+  { id: "m1", label: "Ready for Paving", date: addDays(today, 27), lane_id: "s1", row_index: 0 },
+  { id: "m2", label: "Substantial Completion", date: null, lane_id: null, row_index: 0 },
 ];
 
 const msLinks: PullMilestoneLink[] = [

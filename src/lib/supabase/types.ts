@@ -123,7 +123,9 @@ export interface PullTicketDep {
 export interface PullMilestone {
   id: string;
   label: string;
-  date: string;
+  date: string | null;   // null = in the tray
+  lane_id: string | null;
+  row_index: number;
 }
 
 export type ReminderType = "5_day" | "1_day";

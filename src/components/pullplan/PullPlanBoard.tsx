@@ -47,6 +47,7 @@ function fmtShort(iso: string) {
 
 type DragMode =
   | { kind: "ticket"; id: string; grabX: number; grabY: number }
+  | { kind: "milestone"; id: string }
   | { kind: "resize"; id: string }
   | { kind: "line" };
 
@@ -103,7 +104,7 @@ export default function PullPlanBoard({
   const dayW = Math.round(BASE_DAY_W * zoom);
   const weekW = Math.round(BASE_WEEK_W * zoom);
   const ticketH = Math.max(32, Math.round(78 * zoom)); // ticket height scales with zoom
-  const msSize = Math.max(40, Math.round(74 * zoom));  // milestone diamond scales with zoom
+  const msSize = Math.max(30, Math.round(54 * zoom));  // milestone diamond scales with zoom
   // Active zone starts at least 2 weeks before the active line, extended back
   // to the earliest placed ticket so nothing is cut off.
   const earliestStart = tickets.reduce<string | null>(
@@ -173,14 +174,18 @@ export default function PullPlanBoard({
     let top = 0;
     return lanes.map((lane, idx) => {
       const list = tickets.filter(t => t.lane_id === lane.id && t.start_date);
-      const maxRow = list.reduce((m, t) => Math.max(m, t.row_index), 0);
+      const laneMs = milestones.filter(m => m.lane_id === lane.id && m.date);
+      const maxRow = Math.max(
+        list.reduce((m, t) => Math.max(m, t.row_index), 0),
+        laneMs.reduce((m, x) => Math.max(m, x.row_index), 0)
+      );
       const rows = Math.max(2, maxRow + 2); // spare row at the bottom for dropping
       const height = rows * (ticketH + LANE_PAD) + LANE_PAD;
       const layout = { lane, list, rows, height, top, tints: LANE_TINTS[idx % LANE_TINTS.length] };
       top += height;
       return layout;
     });
-  }, [lanes, tickets, ticketH]);
+  }, [lanes, tickets, milestones, ticketH]);
   const lanesH = laneLayouts.reduce((a, l) => a + l.height, 0);
 
   const ticketPos = useMemo(() => {
@@ -198,6 +203,24 @@ export default function PullPlanBoard({
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [laneLayouts, dayW, weekW, activeDate]);
+
+  // Milestone diamond centers (lane placement, or floating at the top if no lane)
+  const msPos = useMemo(() => {
+    const map = new Map<string, { cx: number; cy: number }>();
+    for (const m of milestones) {
+      if (!m.date) continue;
+      const cx = xForDate(m.date) + dayW / 2;
+      const ll = m.lane_id ? laneLayouts.find(l => l.lane.id === m.lane_id) : undefined;
+      if (ll) {
+        const row = Math.min(ll.rows - 1, m.row_index);
+        map.set(m.id, { cx, cy: ll.top + LANE_PAD + row * (ticketH + LANE_PAD) + ticketH / 2 });
+      } else {
+        map.set(m.id, { cx, cy: 14 + msSize / 2 });
+      }
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [milestones, laneLayouts, dayW, weekW, activeDate, ticketH, msSize]);
 
   // ── DB helpers ──────────────────────────────────────────────────────────────
   async function patchTicket(id: string, patch: Partial<PullTicket>) {
@@ -285,12 +308,19 @@ export default function PullPlanBoard({
   }
 
   async function addMilestone() {
-    if (!msLabel.trim() || !msDate) return;
+    if (!msLabel.trim()) return;
     const { data, error: err } = await supa.from("pull_milestones")
-      .insert({ label: msLabel.trim(), date: msDate }).select("id, label, date").single();
+      .insert({ label: msLabel.trim(), date: msDate || null })
+      .select("id, label, date, lane_id, row_index").single();
     if (err) { setError(err.message); return; }
-    if (data) setMilestones(prev => [...prev, data as PullMilestone].sort((a, b) => a.date.localeCompare(b.date)));
+    if (data) setMilestones(prev => [...prev, data as PullMilestone]);
     setMsLabel(""); setMsDate(""); setShowMsForm(false);
+  }
+
+  async function patchMilestone(id: string, patch: Partial<PullMilestone>) {
+    setMilestones(prev => prev.map(m => (m.id === id ? { ...m, ...patch } : m)));
+    const { error: err } = await supa.from("pull_milestones").update(patch).eq("id", id);
+    if (err) setError(err.message);
   }
 
   async function removeMilestone(id: string) {
@@ -387,6 +417,28 @@ export default function PullPlanBoard({
         return;
       }
 
+      if (m.kind === "milestone") {
+        const ms = milestones.find(x => x.id === m.id);
+        if (!ms) return;
+        if (!moved) { handleMilestoneClick(ms); return; }
+        if (trayRef.current) {
+          const tr = trayRef.current.getBoundingClientRect();
+          if (ev.clientX >= tr.left && ev.clientX <= tr.right && ev.clientY >= tr.top && ev.clientY <= tr.bottom) {
+            await patchMilestone(ms.id, { date: null, lane_id: null, row_index: 0 });
+            return;
+          }
+        }
+        if (!boardRef.current) return;
+        const p = boardXY(ev);
+        const laneY = p.y - HEADER_H;
+        const ll = laneLayouts.find(l => laneY >= l.top && laneY < l.top + l.height);
+        const date = dateForX(Math.max(0, p.x - dayW / 2));
+        if (!ll) { await patchMilestone(ms.id, { date, lane_id: null }); return; }
+        const row = Math.min(ll.rows - 1, Math.max(0, Math.floor((laneY - ll.top - LANE_PAD) / (ticketH + LANE_PAD))));
+        await patchMilestone(ms.id, { date, lane_id: ll.lane.id, row_index: row });
+        return;
+      }
+
       const t = ticketMap.get(m.id);
       if (!t) return;
 
@@ -456,7 +508,7 @@ export default function PullPlanBoard({
     for (const l of msLinks) {
       const t = ticketMap.get(l.ticket_id);
       const m = milestones.find(x => x.id === l.milestone_id);
-      if (!t?.start_date || !m) continue;
+      if (!t?.start_date || !m?.date) continue;
       if (l.ticket_is_pred) {
         // ticket must finish before the milestone date
         if (ticketEnd(t)! >= m.date) bad.add(t.id);
@@ -550,7 +602,9 @@ export default function PullPlanBoard({
           <input value={msLabel} onChange={e => setMsLabel(e.target.value)} placeholder="Milestone label" autoFocus
             className="w-64 rounded border border-zinc-300 px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6]" />
           <input type="date" value={msDate} onChange={e => setMsDate(e.target.value)}
+            title="Optional — leave blank to add to the tray"
             className="rounded border border-zinc-300 px-2 py-1.5 text-sm outline-none focus:border-[#2E6EA6]" />
+          <span className="text-[10px] text-zinc-400">date optional — blank goes to the tray</span>
           <button onClick={addMilestone} className="rounded bg-[#1A3560] px-3 py-1.5 text-sm text-white">Add</button>
         </div>
       )}
@@ -568,6 +622,18 @@ export default function PullPlanBoard({
               location={t.location_id ? locMap.get(t.location_id) : undefined}
               responsible={memberMap.get(t.responsible_id ?? t.owner_id)}
               hid={isHid(t)} connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id} compact />
+          </div>
+        ))}
+        {/* Tray milestones */}
+        {milestones.filter(m => !m.date).map(m => (
+          <div key={m.id}
+            className="relative flex h-[64px] w-[64px] cursor-grab items-center justify-center"
+            style={{ touchAction: "none" }}
+            onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
+            onDoubleClick={() => removeMilestone(m.id)}
+            title={`Milestone: ${m.label} — drag onto the board (double-click to remove)`}>
+            <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-zinc-400 bg-zinc-200 shadow" />
+            <span className="relative px-1 text-center text-[8px] font-bold leading-tight text-zinc-800">{m.label}</span>
           </div>
         ))}
       </div>
@@ -723,7 +789,8 @@ export default function PullPlanBoard({
 
             {/* ── Dependency arrows ── */}
             {lanesH > 0 && (
-              <svg className="absolute z-20" style={{ left: 0, top: HEADER_H, width: totalW, height: lanesH, pointerEvents: "none" }}>
+              // Below tickets (z-10) so arrow hit-areas never block ticket dragging
+              <svg className="absolute" style={{ left: 0, top: HEADER_H, width: totalW, height: lanesH, pointerEvents: "none", zIndex: 5 }}>
                 <defs>
                   <marker id="pp-arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
                     <path d="M0,0 L7,3.5 L0,7 z" fill="#2E6EA6" />
@@ -756,9 +823,10 @@ export default function PullPlanBoard({
                   const m = milestones.find(x => x.id === l.milestone_id);
                   const tp = ticketPos.get(l.ticket_id);
                   const t = ticketMap.get(l.ticket_id);
-                  if (!m || !tp || !t) return null;
-                  const mx = xForDate(m.date) + dayW / 2;
-                  const my = 14 + msSize / 2; // milestone diamond center (relative to lanes area)
+                  const mp = m ? msPos.get(m.id) : undefined;
+                  if (!m || !m.date || !mp || !tp || !t) return null;
+                  const mx = mp.cx;
+                  const my = mp.cy;
                   const bad = outOfSeqIds.has(t.id) &&
                     (l.ticket_is_pred ? ticketEnd(t)! >= m.date : t.start_date! <= m.date);
                   let x1: number, y1: number, x2: number, y2: number;
@@ -785,19 +853,24 @@ export default function PullPlanBoard({
 
             {/* ── Milestones (diamonds) ── */}
             {milestones.map(m => {
-              const x = xForDate(m.date);
-              if (x < 0 || m.date > boardEnd) return null;
+              if (!m.date) return null; // in the tray
+              const pos = msPos.get(m.id);
+              if (!pos || m.date > boardEnd) return null;
               const size = msSize;
               const isFrom = connectFrom?.kind === "milestone" && connectFrom.id === m.id;
+              const dragging = drag?.kind === "milestone" && drag.id === m.id && ghost;
+              const left = dragging ? ghost!.x - size / 2 : pos.cx - size / 2;
+              const top = dragging ? ghost!.y - size / 2 : HEADER_H + pos.cy - size / 2;
               return (
-                <div key={m.id} className={`absolute z-20 flex items-center justify-center ${connectMode ? "cursor-pointer" : ""}`}
-                  style={{ left: x - size / 2 + dayW / 2, top: HEADER_H + 14, width: size, height: size }}
-                  onClick={() => handleMilestoneClick(m)}
+                <div key={m.id}
+                  className={`absolute flex items-center justify-center ${dragging ? "z-40 opacity-80" : "z-20"} ${connectMode ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
+                  style={{ left, top, width: size, height: size, touchAction: "none" }}
+                  onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
                   onDoubleClick={() => { if (!connectMode) removeMilestone(m.id); }}
-                  title={`Milestone: ${m.label} — ${m.date}${connectMode ? " (click to connect)" : " (double-click to remove)"}`}>
-                  <div className="absolute inset-0 rotate-45 rounded-[3px] shadow-md"
-                    style={{ backgroundColor: "#4fd1c5", outline: isFrom ? "3px solid #1A3560" : undefined }} />
-                  <span className="relative px-2 text-center font-bold leading-tight text-white"
+                  title={`Milestone: ${m.label} — ${m.date}${connectMode ? " (click to connect)" : " (drag to move, double-click to remove)"}`}>
+                  <div className="absolute inset-0 rotate-45 rounded-[3px] border border-zinc-400 shadow-md"
+                    style={{ backgroundColor: "#e5e7eb", outline: isFrom ? "3px solid #1A3560" : undefined }} />
+                  <span className="relative px-2 text-center font-bold leading-tight text-zinc-800"
                     style={{ fontSize: Math.max(7, Math.round(9 * zoom)) }}>{m.label}</span>
                 </div>
               );

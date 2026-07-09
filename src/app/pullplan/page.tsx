@@ -24,8 +24,8 @@ export default async function PullPlanPage() {
       .order("sort_order", { ascending: true })
       .returns<PullTicket[]>(),
     supabase.from("pull_milestones")
-      .select("id, label, date")
-      .order("date", { ascending: true })
+      .select("id, label, date, lane_id, row_index")
+      .order("created_at", { ascending: true })
       .returns<PullMilestone[]>(),
     supabase.from("profiles")
       .select("id, email, full_name, is_admin")
