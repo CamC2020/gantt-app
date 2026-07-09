@@ -22,7 +22,7 @@ export default async function PullPlanPage() {
     { data: profiles }, { data: roles }, { data: deps },
     { data: locations }, { data: settings }, { data: msLinks }, { data: snapshots },
     { data: constraints }, { data: cLinks }, { data: support },
-    { data: masterTasks },
+    { data: masterTasks }, { data: importSkips },
   ] = await Promise.all([
     supabase.from("pull_lanes")
       .select("id, name, sort_order")
@@ -78,6 +78,7 @@ export default async function PullPlanPage() {
           .order("sort_order", { ascending: true })
           .returns<Task[]>()
       : Promise.resolve({ data: [] as Task[] }),
+    supabase.from("pull_import_skips").select("task_id"),
   ]);
 
   const masterTaskIds = (masterTasks ?? []).map(t => t.id);
@@ -110,6 +111,7 @@ export default async function PullPlanPage() {
         initialActiveDate={settings?.active_date ?? null}
         masterTasks={masterTasks ?? []}
         masterDeps={masterDeps ?? []}
+        initialImportSkips={(importSkips ?? []).map(r => r.task_id as string)}
         lookaheadProjectId={lookahead?.id ?? null}
         members={profiles ?? []}
         currentUserId={user.id}

@@ -88,6 +88,10 @@ export default async function LookaheadPage() {
           printTitle="6-Week Lookahead"
           fixedStart={weekStart}
           fixedEnd={weekEnd}
+          hideCrewCol
+          hideDtcCol
+          hideSupportCol
+          championBadge
         />
       )}
     </div>

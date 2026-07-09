@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { addDays, diffInDays, parseISODate, todayISO, countWorkingDays, addWorkingDays } from "@/lib/date";
+import { addDays, diffInDays, parseISODate, todayISO, countWorkingDays, addWorkingDays, nextWorkingDay } from "@/lib/date";
 import type { Profile, Task, TaskDependency, TaskSupport, StatHoliday, PullRole } from "@/lib/supabase/types";
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
@@ -13,20 +13,14 @@ const ZOOM_MIN = 0.07; // ~2px/day — enough to fit a full year on screen
 const ZOOM_MAX = 3;
 const ROW_H = 36;
 const HEADER_H = 54; // month row (24px) + day row (28px) + 2px border
-const COL = {
-  toggle: 26, wbs: 72, name: 180, dur: 52,
-  start: 80, end: 80, pred: 60, lag: 44,
-  champ: 110, supp: 120, sat: 34, sun: 34,
-  sub: 100, crew: 50, dtc: 46,
-  act: 48,
-};
+const MIN_NAME_W = 160;
+const MAX_NAME_W = 460;
 
 // Depth-based row background (opaque — left panel must be solid to mask Gantt bars on scroll).
 // Each color is rgba(26,53,96,α) pre-blended onto white.
 const LEVEL_BG = ["#eaedf1", "#f2f3f6", "#f9fafb", "#ffffff"];
 const MILESTONE_BG = "#fef3e1"; // rgba(245,158,11,0.12) on white
 const CONSTRAINT_BG = "#fde8e8"; // light red tint for constraint rows
-const LEFT_W = Object.values(COL).reduce((a, b) => a + b, 0);
 
 // ─── Champion colours (stable index per member) ───────────────────────────────
 const CHAMP_PALETTE = [
@@ -118,6 +112,8 @@ export default function MsProjectGantt({
   projectId, initialTasks, initialDeps, initialSupport, members, roles = [], readOnly = false,
   hideStatHolidays = false, printTitle = "Master Schedule",
   fixedStart, fixedEnd,
+  hideCrewCol = false, hideDtcCol = false, hideChampionCol = false, hideSupportCol = false,
+  championBadge = false,
 }: {
   projectId: string;
   initialTasks: Task[];
@@ -130,6 +126,11 @@ export default function MsProjectGantt({
   printTitle?: string;
   fixedStart?: string;  // lock timeline to this start date (ISO)
   fixedEnd?: string;    // lock timeline to this end date (ISO)
+  hideCrewCol?: boolean;
+  hideDtcCol?: boolean;
+  hideChampionCol?: boolean;
+  hideSupportCol?: boolean;
+  championBadge?: boolean; // show champion initials as a circle badge on the bar instead of a column
 }) {
   const router = useRouter();
   const supa   = useMemo(() => createClient(), []);
@@ -149,6 +150,28 @@ export default function MsProjectGantt({
   const [rowDragId,   setRowDragId]   = useState<string | null>(null);
   const [rowOverId,   setRowOverId]   = useState<string | null>(null);
   const [zoom,        setZoom]        = useState(1);
+
+  // Task Name column auto-sizes to fit the longest title on the board.
+  const nameColW = useMemo(() => {
+    let maxLen = 12;
+    for (const t of tasks) if (t.title.length > maxLen) maxLen = t.title.length;
+    return Math.max(MIN_NAME_W, Math.min(MAX_NAME_W, maxLen * 6.5 + 40));
+  }, [tasks]);
+
+  const COL = useMemo(() => ({
+    toggle: 26, wbs: 72, name: nameColW, dur: 52,
+    start: 80, end: 80, pred: 60, lag: 44,
+    champ: hideChampionCol ? 0 : 110,
+    supp: hideSupportCol ? 0 : 120,
+    sat: 34, sun: 34,
+    sub: 100,
+    crew: hideCrewCol ? 0 : 50,
+    dtc: hideDtcCol ? 0 : 46,
+    act: 48,
+  }), [nameColW, hideChampionCol, hideSupportCol, hideCrewCol, hideDtcCol]);
+
+  const LEFT_W = useMemo(() => Object.values(COL).reduce((a, b) => a + b, 0), [COL]);
+
   const [leftW,       setLeftW]       = useState(LEFT_W);
   const resizingRef = useRef(false);
   const resizeStartX = useRef(0);
@@ -172,9 +195,10 @@ export default function MsProjectGantt({
   // Keep ref in sync so onUp always sees the latest tasks
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
 
-  // Sync from server after mutations (router.refresh)
+  // Sync from server after mutations (router.refresh). Skip while a drag or an
+  // inline cell edit is in progress so an unrelated refresh doesn't clobber it.
   useEffect(() => {
-    if (!drag) {
+    if (!drag && !edit) {
       setTasks(initialTasks);
       setDeps(initialDeps);
       setSupport(initialSupport);
@@ -192,11 +216,6 @@ export default function MsProjectGantt({
   const memberMap    = useMemo(() => new Map(members.map(p => [p.id, p])), [members]);
   const champColorMap = useMemo(() => buildChampionColorMap(members), [members]);
   const holidaySet   = useMemo(() => new Set(holidays.map(h => h.date)), [holidays]);
-
-  const championsInUse = useMemo(() => {
-    const ids = new Set(tasks.map(t => t.champion_id).filter(Boolean) as string[]);
-    return members.filter(m => ids.has(m.id));
-  }, [tasks, members]);
 
   const successorsOf = useMemo(() => {
     const m = new Map<string, string[]>();
@@ -283,12 +302,16 @@ export default function MsProjectGantt({
       const succ = m.get(succId); if (!succ) continue;
       // Required start = day after the LATEST-finishing predecessor (respects multiple preds)
       const allPreds = predsOf.get(succId) ?? [];
-      const reqStart = allPreds.reduce((latest, dep) => {
+      const rawReqStart = allPreds.reduce((latest, dep) => {
         const pred = m.get(dep.predecessor_id); if (!pred) return latest;
         const r = addDays(pred.end_date, 1 + dep.lag_days);
         return r > latest ? r : latest;
       }, "");
-      if (!reqStart || succ.start_date === reqStart) continue;
+      if (!rawReqStart) continue;
+      const reqStart = succ.is_milestone
+        ? rawReqStart
+        : nextWorkingDay(rawReqStart, succ.work_sat ?? false, succ.work_sun ?? false, holidaySet);
+      if (succ.start_date === reqStart) continue;
       const dur = diffInDays(succ.start_date, succ.end_date);
       m.set(succId, { ...succ, start_date: reqStart, end_date: addDays(reqStart, dur) });
       cascade(succId, m, visited);
@@ -419,7 +442,8 @@ export default function MsProjectGantt({
         const pred = taskMap.get(pid); if (!pred) return latest;
         return pred.end_date > latest ? pred.end_date : latest;
       }, "");
-      const start = addDays(reqStart, 1);
+      const rawStart = addDays(reqStart, 1);
+      const start = task.is_milestone ? rawStart : nextWorkingDay(rawStart, task.work_sat ?? false, task.work_sun ?? false, holidaySet);
       if (start !== task.start_date) {
         const hasKidsTask = (cm.get(taskId) ?? []).length > 0;
         if (hasKidsTask) {
@@ -448,11 +472,14 @@ export default function MsProjectGantt({
     setDeps(prev => prev.map(d => d.task_id === taskId ? { ...d, lag_days: lag } : d));
 
     // Compute new required start from updated lag
-    const reqStart = predDeps.reduce((latest, dep) => {
+    const rawReqStart = predDeps.reduce((latest, dep) => {
       const pred = taskMap.get(dep.predecessor_id); if (!pred) return latest;
       const r = addDays(pred.end_date, 1 + lag);
       return r > latest ? r : latest;
     }, "");
+    const reqStart = rawReqStart && !task.is_milestone
+      ? nextWorkingDay(rawReqStart, task.work_sat ?? false, task.work_sun ?? false, holidaySet)
+      : rawReqStart;
 
     if (reqStart && reqStart !== task.start_date) {
       const ws = task.work_sat ?? false, wsu = task.work_sun ?? false;
@@ -533,18 +560,20 @@ export default function MsProjectGantt({
     if (isNaN(n) || n < 0) return;
     const isMilestone = n === 0;
     const ws = task.work_sat ?? false, wsu = task.work_sun ?? false;
-    const newEnd = isMilestone ? task.start_date : addWorkingDays(task.start_date, n - 1, ws, wsu, holidaySet);
+    const start = isMilestone ? task.start_date : nextWorkingDay(task.start_date, ws, wsu, holidaySet);
+    const newEnd = isMilestone ? start : addWorkingDays(start, n - 1, ws, wsu, holidaySet);
     // Save is_milestone flag first, then cascade dates
     await supa.auth.getSession();
     await supa.from("tasks").update({ is_milestone: isMilestone }).eq("id", taskId);
-    await applyDateChange(taskId, { end_date: newEnd, is_milestone: isMilestone });
+    await applyDateChange(taskId, { start_date: start, end_date: newEnd, is_milestone: isMilestone });
   }
 
-  async function saveStartDate(taskId: string, newStart: string) {
-    const task = taskMap.get(taskId); if (!task || !newStart) return;
+  async function saveStartDate(taskId: string, newStartInput: string) {
+    const task = taskMap.get(taskId); if (!task || !newStartInput) return;
     const ws = task.work_sat ?? false, wsu = task.work_sun ?? false;
-    const wDur = task.is_milestone ? 0 : countWorkingDays(task.start_date, task.end_date, ws, wsu, holidaySet);
-    const newEnd = task.is_milestone ? newStart : (wDur <= 1 ? newStart : addWorkingDays(newStart, wDur - 1, ws, wsu, holidaySet));
+    const newStart = task.is_milestone ? newStartInput : nextWorkingDay(newStartInput, ws, wsu, holidaySet);
+    const wDur = task.is_milestone ? 0 : Math.max(1, countWorkingDays(task.start_date, task.end_date, ws, wsu, holidaySet));
+    const newEnd = task.is_milestone ? newStart : addWorkingDays(newStart, wDur - 1, ws, wsu, holidaySet);
     await applyDateChange(taskId, { start_date: newStart, end_date: newEnd });
   }
 
@@ -599,9 +628,40 @@ export default function MsProjectGantt({
   }
 
   async function saveWorkDay(taskId: string, field: "work_sat" | "work_sun", value: boolean) {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, [field]: value } : t));
+    const task = taskMap.get(taskId); if (!task) return;
+    const oldSat = task.work_sat ?? false, oldSun = task.work_sun ?? false;
+    const newSat = field === "work_sat" ? value : oldSat;
+    const newSun = field === "work_sun" ? value : oldSun;
+
+    let newStart = task.start_date, newEnd = task.end_date;
+    if (!task.is_milestone) {
+      // Preserve the working-day count across the flag change, snapping the start
+      // forward if it no longer falls on a working day under the new flags.
+      const oldDur = Math.max(1, countWorkingDays(task.start_date, task.end_date, oldSat, oldSun, holidaySet));
+      newStart = nextWorkingDay(task.start_date, newSat, newSun, holidaySet);
+      newEnd = addWorkingDays(newStart, oldDur - 1, newSat, newSun, holidaySet);
+    }
+
+    const m = new Map(tasksRef.current.map(t => [t.id, t]));
+    m.set(taskId, { ...task, work_sat: newSat, work_sun: newSun, start_date: newStart, end_date: newEnd });
+    cascade(taskId, m);
+    const next = recomputeSummaryDates(Array.from(m.values()));
+    setTasks(next);
+    tasksRef.current = next;
+
     await supa.auth.getSession();
-    await supa.from("tasks").update({ [field]: value }).eq("id", taskId);
+    await supa.from("tasks").update({ work_sat: newSat, work_sun: newSun, start_date: newStart, end_date: newEnd }).eq("id", taskId);
+
+    const serverMap = new Map(initialTasks.map(t => [t.id, t]));
+    const changed = next.filter(t => {
+      if (t.id === taskId) return false;
+      const o = serverMap.get(t.id);
+      return o && (o.start_date !== t.start_date || o.end_date !== t.end_date);
+    });
+    if (changed.length) {
+      await Promise.all(changed.map(t => supa.from("tasks").update({ start_date: t.start_date, end_date: t.end_date }).eq("id", t.id)));
+    }
+    router.refresh();
   }
 
   async function indentTask(taskId: string) {
@@ -758,13 +818,17 @@ export default function MsProjectGantt({
     let barsSVG = "";
     all.forEach((task, idx) => {
       const hasKids = (cm.get(task.id) ?? []).length > 0;
-      const isMile = task.is_milestone ?? false;
+      const isCon = task.is_constraint ?? false;
+      const isMile = (task.is_milestone ?? false) && !isCon;
       const off = diffInDays(pStart, task.start_date);
       const calW = Math.max((diffInDays(task.start_date, task.end_date) + 1) * D, 3);
-      const color = hasKids ? "#1A3560" : (task.champion_id ? (champColorMap.get(task.champion_id) ?? "#94A3B8") : "#94A3B8");
+      const color = hasKids ? "#1A3560" : (task.role_id ? (roles.find(r => r.id === task.role_id)?.color ?? "#94A3B8") : "#94A3B8");
       const cy = idx * R + R / 2;
 
-      if (isMile) {
+      if (isCon) {
+        const cx = off * D + D / 2, s = 6;
+        barsSVG += `<circle cx="${cx}" cy="${cy}" r="${s}" fill="#ef4444" stroke="#b91c1c" stroke-width="1"/>`;
+      } else if (isMile) {
         const cx = off * D + D / 2, s = 6;
         barsSVG += `<rect x="${cx - s}" y="${cy - s}" width="${s * 2}" height="${s * 2}" fill="#F59E0B" stroke="#D97706" stroke-width="1" transform="rotate(45,${cx},${cy})"/>`;
       } else if (hasKids) {
@@ -773,6 +837,12 @@ export default function MsProjectGantt({
         barsSVG += `<polygon points="${off * D + calW},${cy - 4} ${off * D + calW},${cy + 4} ${off * D + calW - 5},${cy}" fill="${color}"/>`;
       } else {
         barsSVG += `<rect x="${off * D}" y="${cy - 8}" width="${calW}" height="13" fill="${color}" rx="2"/>`;
+        if (championBadge && task.champion_id) {
+          const bx = off * D + calW, by = cy;
+          const p = memberMap.get(task.champion_id);
+          barsSVG += `<circle cx="${bx}" cy="${by}" r="6" fill="${champColorMap.get(task.champion_id) ?? "#1A3560"}" stroke="white" stroke-width="1.5"/>`;
+          if (p) barsSVG += `<text x="${bx}" y="${by + 2.5}" font-size="6" font-weight="700" fill="white" text-anchor="middle">${initials(p)}</text>`;
+        }
       }
     });
 
@@ -812,14 +882,17 @@ export default function MsProjectGantt({
       const wbs = wbsMap.get(task.id) ?? "";
       const lvl = depth(task, taskMap);
       const hasKids = (cm.get(task.id) ?? []).length > 0;
-      const isMile = task.is_milestone ?? false;
+      const isCon = task.is_constraint ?? false;
+      const isMile = (task.is_milestone ?? false) && !isCon;
       const ws = task.work_sat ?? false, wsu = task.work_sun ?? false;
-      const wDur = isMile ? 0 : countWorkingDays(task.start_date, task.end_date, ws, wsu, holidaySet);
-      const bg = isMile ? "#fef3e1" : LEVEL_BG[Math.min(lvl, LEVEL_BG.length - 1)];
+      const wDur = isMile || isCon ? 0 : countWorkingDays(task.start_date, task.end_date, ws, wsu, holidaySet);
+      const bg = isCon ? "#fde8e8" : isMile ? "#fef3e1" : LEVEL_BG[Math.min(lvl, LEVEL_BG.length - 1)];
+      const durLabel = isCon ? "C" : isMile ? "M" : `${wDur}d`;
+      const durColor = isCon ? "#dc2626" : "#374151";
       tableRows += `<tr style="height:${R}px;background:${bg}">
         <td style="padding:0 4px;font-size:9px;color:#6b7280;font-family:monospace">${wbs}</td>
         <td style="padding:0 4px;padding-left:${6 + lvl * 10}px;font-size:10px;font-weight:${hasKids ? 600 : 400};overflow:hidden;max-width:200px;white-space:nowrap">${task.title}</td>
-        <td style="padding:0 4px;font-size:9px;text-align:center;color:#374151">${isMile ? "M" : `${wDur}d`}</td>
+        <td style="padding:0 4px;font-size:9px;text-align:center;color:${durColor};font-weight:${isCon ? 700 : 400}">${durLabel}</td>
         <td style="padding:0 4px;font-size:9px;text-align:center;color:#374151;font-family:monospace">${task.start_date}</td>
         <td style="padding:0 4px;font-size:9px;text-align:center;color:#374151;font-family:monospace">${task.end_date}</td>
       </tr>`;
@@ -857,16 +930,15 @@ export default function MsProjectGantt({
 
     // Legend items
     const legendItems: string[] = [];
-    championsInUse.forEach(p => {
-      const color = champColorMap.get(p.id) ?? "#94A3B8";
+    roles.forEach(r => {
       legendItems.push(`<div style="display:flex;align-items:center;gap:4px">
-        <div style="width:12px;height:12px;border-radius:2px;background:${color} !important;flex-shrink:0"></div>
-        <span style="font-size:9px;color:#374151">${p.full_name || p.email}</span>
+        <div style="width:12px;height:12px;border-radius:2px;background:${r.color} !important;flex-shrink:0"></div>
+        <span style="font-size:9px;color:#374151">${r.name}</span>
       </div>`);
     });
     legendItems.push(`<div style="display:flex;align-items:center;gap:4px">
       <div style="width:12px;height:12px;border-radius:2px;background:#94A3B8 !important;flex-shrink:0"></div>
-      <span style="font-size:9px;color:#374151">Unassigned</span>
+      <span style="font-size:9px;color:#374151">No Role/Trade</span>
     </div>`);
     legendItems.push(`<div style="display:flex;align-items:center;gap:4px">
       <div style="width:12px;height:12px;border-radius:2px;background:#1A3560 !important;flex-shrink:0"></div>
@@ -876,6 +948,16 @@ export default function MsProjectGantt({
       <div style="width:10px;height:10px;background:#F59E0B !important;border:1px solid #D97706;transform:rotate(45deg);flex-shrink:0;margin:1px 2px"></div>
       <span style="font-size:9px;color:#374151">Milestone</span>
     </div>`);
+    legendItems.push(`<div style="display:flex;align-items:center;gap:4px">
+      <div style="width:10px;height:10px;border-radius:50%;background:#ef4444 !important;border:1px solid #b91c1c;flex-shrink:0;margin:1px 2px"></div>
+      <span style="font-size:9px;color:#374151">Constraint</span>
+    </div>`);
+    if (championBadge) {
+      legendItems.push(`<div style="display:flex;align-items:center;gap:4px">
+        <div style="width:10px;height:10px;border-radius:50%;background:#1A3560 !important;border:1px solid white;flex-shrink:0;margin:1px 2px"></div>
+        <span style="font-size:9px;color:#374151">Champion (initials)</span>
+      </div>`);
+    }
     if (holidaySet.size > 0) {
       legendItems.push(`<div style="display:flex;align-items:center;gap:4px">
         <div style="width:12px;height:12px;background:#fee2e2 !important;border:1px solid #fecaca;flex-shrink:0"></div>
@@ -1031,19 +1113,19 @@ export default function MsProjectGantt({
               <H w={COL.end} center>Finish</H>
               <H w={COL.pred} center>Pred.</H>
               <H w={COL.lag} center title="Lag days (negative = overlap)">Lag</H>
-              <H w={COL.champ}>Champion</H>
-              <H w={COL.supp}>Support</H>
+              {!hideChampionCol && <H w={COL.champ}>Champion</H>}
+              {!hideSupportCol && <H w={COL.supp}>Support</H>}
               <H w={COL.sat} center title="Saturday is a working day">Sat</H>
               <H w={COL.sun} center title="Sunday is a working day">Sun</H>
               <H w={COL.sub}>Role/Trade</H>
-              <H w={COL.crew} center>Crew</H>
-              <H w={COL.dtc} center title="Working days remaining to end date">DTC</H>
+              {!hideCrewCol && <H w={COL.crew} center>Crew</H>}
+              {!hideDtcCol && <H w={COL.dtc} center title="Working days remaining to end date">DTC</H>}
               <H w={COL.act} center />
             </div>
-            {/* ── DRAG HANDLE ── */}
+            {/* ── DRAG HANDLE ── (sticky so it stays put on horizontal scroll — only moves when dragged) */}
             <div
-              className="z-40 shrink-0 cursor-col-resize bg-zinc-400 hover:bg-[#2E6EA6] active:bg-[#2E6EA6] transition-colors self-stretch"
-              style={{ width: 8, marginRight: -8 }}
+              className="sticky z-40 shrink-0 cursor-col-resize bg-zinc-400 hover:bg-[#2E6EA6] active:bg-[#2E6EA6] transition-colors self-stretch"
+              style={{ width: 8, left: leftW, marginRight: -8 }}
               title="Drag to resize"
               onPointerDown={e => {
                 resizingRef.current = true;
@@ -1132,8 +1214,8 @@ export default function MsProjectGantt({
             const dtc      = isMile ? null : (task.end_date >= today ? countWorkingDays(today, task.end_date, workSat, workSun, holidaySet) : 0);
             const champProfile = task.champion_id ? memberMap.get(task.champion_id) : undefined;
             const suppIds  = supportOf.get(task.id) ?? [];
-            const champColor = task.champion_id ? (champColorMap.get(task.champion_id) ?? "#94A3B8") : "#94A3B8";
-            const barColor = hasKids ? "#1A3560" : champColor;
+            const roleColor = task.role_id ? (roles.find(r => r.id === task.role_id)?.color ?? "#94A3B8") : "#94A3B8";
+            const barColor = hasKids ? "#1A3560" : roleColor;
             const availableForSupport = members.filter(m => m.id !== task.champion_id && !suppIds.includes(m.id));
             const rowBg    = isCon ? CONSTRAINT_BG : isMile ? MILESTONE_BG : LEVEL_BG[Math.min(lvl, LEVEL_BG.length - 1)];
 
@@ -1286,6 +1368,7 @@ export default function MsProjectGantt({
                   </div>
 
                   {/* Champion — hidden for summary tasks */}
+                  {!hideChampionCol && (
                   <div className="shrink-0 flex items-center px-1" style={{ width: COL.champ }}>
                     {hasKids ? (
                       <span className="text-[11px] text-zinc-300">—</span>
@@ -1303,8 +1386,10 @@ export default function MsProjectGantt({
                       />
                     )}
                   </div>
+                  )}
 
                   {/* Support — hidden for summary tasks */}
+                  {!hideSupportCol && (
                   <div className="shrink-0 flex items-center gap-1 px-1 overflow-hidden" style={{ width: COL.supp }}>
                     {!hasKids && suppIds.slice(0, 3).map(uid => {
                       const p = memberMap.get(uid);
@@ -1331,6 +1416,7 @@ export default function MsProjectGantt({
                     )}
                     {hasKids && <span className="text-[11px] text-zinc-300">—</span>}
                   </div>
+                  )}
 
                   {/* Sat checkbox */}
                   <div className="shrink-0 flex items-center justify-center" style={{ width: COL.sat }}>
@@ -1376,6 +1462,7 @@ export default function MsProjectGantt({
                   </div>
 
                   {/* Crew */}
+                  {!hideCrewCol && (
                   <div className="shrink-0 flex items-center justify-center px-1" style={{ width: COL.crew }}>
                     {hasKids ? <span className="text-[11px] text-zinc-300">—</span> : isECrew ? (
                       <input autoFocus type="number" min="0" className="w-full rounded border border-[#2E6EA6] px-1 py-0.5 text-[11px] outline-none text-center" value={edit!.value}
@@ -1389,14 +1476,17 @@ export default function MsProjectGantt({
                       </span>
                     )}
                   </div>
+                  )}
 
                   {/* Days to Completion */}
+                  {!hideDtcCol && (
                   <div className="shrink-0 flex items-center justify-center px-1" style={{ width: COL.dtc }}>
                     {dtc === null ? <span className="text-[11px] text-zinc-300">—</span>
                       : dtc === 0 ? <span className="text-[11px] text-red-500 font-semibold">0</span>
                       : dtc <= 5 ? <span className="text-[11px] text-amber-600 font-semibold">{dtc}</span>
                       : <span className="text-[11px] text-zinc-600">{dtc}</span>}
                   </div>
+                  )}
 
                   {/* Actions */}
                   <div className="shrink-0 flex items-center justify-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" style={{ width: COL.act }}>
@@ -1479,6 +1569,16 @@ export default function MsProjectGantt({
                     </div>
                   )}
 
+                  {/* Champion initials badge (Lookahead) */}
+                  {championBadge && !hasKids && !isMile && !isCon && champProfile && (
+                    <div
+                      className="absolute top-1/2 -translate-y-1/2 flex items-center justify-center rounded-full border-2 border-white text-[8px] font-bold text-white shadow z-10"
+                      style={{ left: left + barW - 9, width: 18, height: 18, backgroundColor: champColorMap.get(task.champion_id!) ?? "#1A3560" }}
+                      title={`Champion: ${champProfile.full_name || champProfile.email}`}>
+                      {initials(champProfile)}
+                    </div>
+                  )}
+
                   {/* Summary end caps */}
                   {hasKids && !isMile && (
                     <>
@@ -1503,8 +1603,8 @@ export default function MsProjectGantt({
               const pred = taskMap.get(dep.predecessor_id);
               const succ = taskMap.get(dep.task_id);
               if (!pred || !succ) continue;
-              const predIsMile = pred.is_milestone ?? false;
-              const succIsMile = succ.is_milestone ?? false;
+              const predIsMile = (pred.is_milestone ?? false) || (pred.is_constraint ?? false);
+              const succIsMile = (succ.is_milestone ?? false) || (succ.is_constraint ?? false);
               const succHasKids = (cm.get(succ.id) ?? []).length > 0;
               const succBarHalf = succIsMile ? 9 : succHasKids ? 5 : 11;
               const x1 = predIsMile ? dayOff(pred.end_date) * DAY_W + DAY_W / 2 : dayOff(pred.end_date) * DAY_W + DAY_W;
@@ -1591,15 +1691,15 @@ export default function MsProjectGantt({
       {/* ── LEGEND ── */}
       <div className="flex items-center gap-x-5 gap-y-1.5 flex-wrap py-1 border-t border-zinc-100 pt-2">
         <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">Legend</span>
-        {championsInUse.map(p => (
-          <div key={p.id} className="flex items-center gap-1.5">
-            <div className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: champColorMap.get(p.id) }} />
-            <span className="text-[11px] text-zinc-600">{p.full_name || p.email}</span>
+        {roles.map(r => (
+          <div key={r.id} className="flex items-center gap-1.5">
+            <div className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: r.color }} />
+            <span className="text-[11px] text-zinc-600">{r.name}</span>
           </div>
         ))}
         <div className="flex items-center gap-1.5">
           <div className="w-3 h-3 rounded-sm bg-slate-400 shrink-0" />
-          <span className="text-[11px] text-zinc-600">Unassigned</span>
+          <span className="text-[11px] text-zinc-600">No Role/Trade</span>
         </div>
         <div className="flex items-center gap-1.5">
           <div className="w-3 h-3 rounded-sm bg-[#1A3560] shrink-0" />
@@ -1609,6 +1709,16 @@ export default function MsProjectGantt({
           <div className="w-3 h-3 shrink-0 rotate-45 bg-amber-400 border border-amber-500" />
           <span className="text-[11px] text-zinc-600">Milestone</span>
         </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-3 h-3 shrink-0 rounded-full bg-red-500 border border-red-700" />
+          <span className="text-[11px] text-zinc-600">Constraint</span>
+        </div>
+        {championBadge && (
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-3 shrink-0 rounded-full bg-[#1A3560] border border-white" />
+            <span className="text-[11px] text-zinc-600">Champion (initials)</span>
+          </div>
+        )}
         {holidaySet.size > 0 && (
           <div className="flex items-center gap-1.5">
             <div className="w-3 h-3 shrink-0 bg-red-100 border border-red-200" />

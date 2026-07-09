@@ -15,7 +15,7 @@ export default function TicketModal({
   ticket, lanes, roles, locations, members, connections, editable,
   supportIds = [], onSetSupport,
   completionOutcome = "done_ontime",
-  onPatch, onRemoveConnection, onPromise, onStart, onComplete, onDelete, onClose,
+  onPatch, onRemoveConnection, onPromise, onUnpromise, onStart, onComplete, onDelete, onClose,
 }: {
   ticket: PullTicket;
   lanes: PullLane[];
@@ -30,6 +30,7 @@ export default function TicketModal({
   onPatch: (patch: Partial<PullTicket>) => void;
   onRemoveConnection: (key: string) => void;
   onPromise: () => void;
+  onUnpromise?: () => void;
   onStart: () => void;
   onComplete: (varianceReason?: string, varianceNote?: string) => void;
   onDelete: () => void;
@@ -260,6 +261,12 @@ export default function TicketModal({
           {editable && ticket.status === "promised" && (
             <button onClick={onStart} className="rounded bg-[#2E6EA6] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#265d8d]">
               ▶ Start Work
+            </button>
+          )}
+          {editable && ticket.status === "promised" && onUnpromise && (
+            <button onClick={onUnpromise} className="rounded border border-zinc-300 px-3 py-1.5 text-xs font-semibold text-zinc-600 hover:bg-zinc-50"
+              title="Un-pin this ticket and return it to Planned">
+              ↩ Unpromise
             </button>
           )}
           {editable && !isDone && (ticket.status === "promised" || ticket.status === "in_progress") && (

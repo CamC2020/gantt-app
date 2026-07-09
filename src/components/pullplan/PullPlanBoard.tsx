@@ -18,15 +18,14 @@ import {
 
 // ─── Layout constants (scaled by zoom) ─────────────────────────────────────────
 const BASE_DAY_W = 36;    // active-zone day column
-const BASE_WEEK_W = 92;   // future-zone week column
 const LINE_W = 14;        // active line bar
 const LANE_PAD = 8;
 const HEADER_H = 44;
 const ACTIVE_WEEKS_BEFORE = 2;  // active zone shows 2 weeks before the active line
-const FUTURE_WEEKS = 20;        // future zone length
+const INACTIVE_W = 240;         // fixed-width "Inactive" holding panel (no date grid)
 
 const LANE_TINTS: [string, string][] = [
-  ["#eaf6f2", "#dff0ea"], // mint  [active side, future side]
+  ["#eaf6f2", "#dff0ea"], // mint  [active side, inactive side]
   ["#fdecef", "#f9e2e7"], // rose
   ["#edf1fb", "#e2e9f7"],
   ["#fdf5e6", "#f8eeda"],
@@ -63,6 +62,7 @@ export default function PullPlanBoard({
   initialLanes, initialTickets, initialMilestones, initialRoles, initialDeps,
   initialMsLinks = [], initialLocations, initialSnapshots = [], initialConstraints = [], initialCLinks = [],
   initialSupport = [], masterTasks = [], masterDeps = [], lookaheadProjectId = null,
+  initialImportSkips = [],
   initialActiveDate, members, currentUserId, isAdmin,
 }: {
   initialLanes: PullLane[];
@@ -79,6 +79,7 @@ export default function PullPlanBoard({
   masterTasks?: Task[];
   masterDeps?: TaskDependency[];
   lookaheadProjectId?: string | null;
+  initialImportSkips?: string[];
   initialActiveDate: string | null;
   members: Profile[];
   currentUserId: string;
@@ -96,6 +97,7 @@ export default function PullPlanBoard({
   const [constraints, setConstraints] = useState<PullConstraint[]>(initialConstraints);
   const [cLinks, setCLinks] = useState<PullConstraintLink[]>(initialCLinks);
   const [support, setSupport] = useState<PullTicketSupport[]>(initialSupport);
+  const [importSkips, setImportSkips] = useState<Set<string>>(() => new Set(initialImportSkips));
   const [importBusy, setImportBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [editingConstraint, setEditingConstraint] = useState<string | null>(null);
@@ -130,10 +132,13 @@ export default function PullPlanBoard({
   const today = todayISO();
 
   // ── Timeline geometry ───────────────────────────────────────────────────────
+  // Only the active zone (up to the active line) is positioned by date. Everything
+  // starting after the active line sits in a fixed-width "Inactive" panel as plain
+  // square cards — no date grid, no arrows. The moment the active line reaches an
+  // item's start date, it flips into the date-positioned active zone automatically.
   const dayW = Math.round(BASE_DAY_W * zoom);
-  const weekW = Math.round(BASE_WEEK_W * zoom);
-  const ticketH = Math.max(32, Math.round(78 * zoom)); // ticket height scales with zoom
-  const msSize = Math.max(30, Math.round(54 * zoom));  // milestone diamond scales with zoom
+  const ticketH = Math.max(28, Math.round(dayW * 1.1)); // ~square for a 1-day ticket
+  const msSize = Math.max(30, Math.round(54 * zoom));   // milestone/constraint circle scales with zoom
   // Active zone starts at least 2 weeks before the active line, extended back
   // to the earliest placed ticket so nothing is cut off.
   const earliestStart = tickets.reduce<string | null>(
@@ -145,36 +150,29 @@ export default function PullPlanBoard({
   );
   const activeDays = diffInDays(activeStart, activeDate) + 1;
   const activeW = activeDays * dayW;
-  const firstFuture = addDays(activeDate, 1);
-  const futureW = FUTURE_WEEKS * weekW;
-  const totalW = activeW + LINE_W + futureW;
-  const boardEnd = addDays(firstFuture, FUTURE_WEEKS * 7 - 1);
+  const totalW = activeW + LINE_W + INACTIVE_W;
 
+  // Dates beyond the active line clamp to the line itself — a bar that runs past
+  // it is visually cut off there, since anything beyond is the inactive panel.
   function xForDate(d: string): number {
     if (d <= activeDate) return diffInDays(activeStart, d) * dayW;
-    const idx = diffInDays(firstFuture, d);
-    return activeW + LINE_W + Math.floor(idx / 7) * weekW + ((idx % 7) / 7) * weekW;
+    return activeW;
   }
   function widthForTicket(t: PullTicket): number {
     const end = ticketEnd(t)!;
-    return Math.max(26, xForDate(addDays(end, 1)) - xForDate(t.start_date!) - 4 - (end >= activeDate && t.start_date! <= activeDate ? LINE_W : 0));
+    return Math.max(26, xForDate(addDays(end, 1)) - xForDate(t.start_date!) - 4);
   }
+  // Only meaningful for drops inside the active zone; a drop past the line just
+  // needs SOME date after the active line to classify the item as inactive.
   function dateForX(x: number): string {
     if (x < activeW) return addDays(activeStart, Math.max(0, Math.floor(x / dayW)));
     if (x < activeW + LINE_W) return activeDate;
-    const rel = x - activeW - LINE_W;
-    const week = Math.min(FUTURE_WEEKS - 1, Math.floor(rel / weekW));
-    const dayFrac = Math.min(6, Math.floor(((rel % weekW) / weekW) * 7));
-    return addDays(firstFuture, week * 7 + dayFrac);
+    return addDays(activeDate, 1);
   }
 
   const activeDayList = useMemo(
     () => Array.from({ length: activeDays }, (_, i) => addDays(activeStart, i)),
     [activeStart, activeDays]
-  );
-  const futureWeekList = useMemo(
-    () => Array.from({ length: FUTURE_WEEKS }, (_, i) => addDays(firstFuture, i * 7)),
-    [firstFuture]
   );
 
   // ── Maps & permissions ──────────────────────────────────────────────────────
@@ -199,12 +197,21 @@ export default function PullPlanBoard({
   const trayTickets = tickets.filter(t => !t.start_date);
 
   // ── Lane layout (manual rows via row_index; lane grows, min 2 rows) ────────
+  // "Active" items (start_date <= activeDate) are positioned by date and stacked
+  // via row_index. "Inactive" items (start_date > activeDate) are plain squares
+  // in the lane's Inactive panel — no date position, no row_index, no arrows.
   const laneLayouts = useMemo(() => {
     let top = 0;
     return lanes.map((lane, idx) => {
-      const list = tickets.filter(t => t.lane_id === lane.id && t.start_date);
-      const laneMs = milestones.filter(m => m.lane_id === lane.id && m.date);
-      const laneCs = constraints.filter(c => c.lane_id === lane.id && c.date);
+      const allT = tickets.filter(t => t.lane_id === lane.id && t.start_date);
+      const allM = milestones.filter(m => m.lane_id === lane.id && m.date);
+      const allC = constraints.filter(c => c.lane_id === lane.id && c.date);
+      const list = allT.filter(t => t.start_date! <= activeDate);
+      const laneMs = allM.filter(m => m.date! <= activeDate);
+      const laneCs = allC.filter(c => c.date! <= activeDate);
+      const inactiveTickets = allT.filter(t => t.start_date! > activeDate);
+      const inactiveMilestones = allM.filter(m => m.date! > activeDate);
+      const inactiveConstraints = allC.filter(c => c.date! > activeDate);
       const maxRow = Math.max(
         list.reduce((m, t) => Math.max(m, t.row_index), 0),
         laneMs.reduce((m, x) => Math.max(m, x.row_index), 0),
@@ -212,11 +219,14 @@ export default function PullPlanBoard({
       );
       const rows = Math.max(2, maxRow + 2); // spare row at the bottom for dropping
       const height = rows * (ticketH + LANE_PAD) + LANE_PAD;
-      const layout = { lane, list, rows, height, top, tints: LANE_TINTS[idx % LANE_TINTS.length] };
+      const layout = {
+        lane, list, rows, height, top, tints: LANE_TINTS[idx % LANE_TINTS.length],
+        inactiveTickets, inactiveMilestones, inactiveConstraints,
+      };
       top += height;
       return layout;
     });
-  }, [lanes, tickets, milestones, constraints, ticketH]);
+  }, [lanes, tickets, milestones, constraints, ticketH, activeDate]);
   const lanesH = laneLayouts.reduce((a, l) => a + l.height, 0);
 
   const ticketPos = useMemo(() => {
@@ -233,13 +243,13 @@ export default function PullPlanBoard({
     }
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneLayouts, dayW, weekW, activeDate]);
+  }, [laneLayouts, dayW, activeDate]);
 
   // Milestone diamond centers (lane placement, or floating at the top if no lane)
   const msPos = useMemo(() => {
     const map = new Map<string, { cx: number; cy: number }>();
     for (const m of milestones) {
-      if (!m.date) continue;
+      if (!m.date || m.date > activeDate) continue;
       const cx = xForDate(m.date) + dayW / 2;
       const ll = m.lane_id ? laneLayouts.find(l => l.lane.id === m.lane_id) : undefined;
       if (ll) {
@@ -251,13 +261,13 @@ export default function PullPlanBoard({
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [milestones, laneLayouts, dayW, weekW, activeDate, ticketH, msSize]);
+  }, [milestones, laneLayouts, dayW, activeDate, ticketH, msSize]);
 
   // Constraint circle centers (same placement rules as milestones)
   const cPos = useMemo(() => {
     const map = new Map<string, { cx: number; cy: number }>();
     for (const c of constraints) {
-      if (!c.date) continue;
+      if (!c.date || c.date > activeDate) continue;
       const cx = xForDate(c.date) + dayW / 2;
       const ll = c.lane_id ? laneLayouts.find(l => l.lane.id === c.lane_id) : undefined;
       if (ll) {
@@ -269,7 +279,7 @@ export default function PullPlanBoard({
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [constraints, laneLayouts, dayW, weekW, activeDate, ticketH, msSize]);
+  }, [constraints, laneLayouts, dayW, activeDate, ticketH, msSize]);
 
   // ── DB helpers ──────────────────────────────────────────────────────────────
   async function patchTicket(id: string, patch: Partial<PullTicket>) {
@@ -281,7 +291,7 @@ export default function PullPlanBoard({
   async function createTicket(fields: Partial<PullTicket>) {
     const { data, error: err } = await supa
       .from("pull_tickets")
-      .insert({ owner_id: currentUserId, responsible_id: currentUserId, description: "New task", duration: 1, ...fields })
+      .insert({ owner_id: currentUserId, description: "New task", duration: 1, ...fields })
       .select(TICKET_SELECT)
       .single();
     if (err) { setError(err.message); return; }
@@ -293,10 +303,15 @@ export default function PullPlanBoard({
   }
 
   async function deleteTicket(id: string) {
+    const t = ticketMap.get(id);
     setTickets(prev => prev.filter(t => t.id !== id));
     setDeps(prev => prev.filter(d => d.ticket_id !== id && d.predecessor_id !== id));
     setEditing(null);
     await supa.from("pull_tickets").delete().eq("id", id);
+    if (t?.source_task_id) {
+      setImportSkips(prev => new Set(prev).add(t.source_task_id!));
+      await supa.from("pull_import_skips").insert({ task_id: t.source_task_id }); // ignore duplicate-key errors
+    }
   }
 
   async function addDep(ticketId: string, predId: string) {
@@ -404,8 +419,13 @@ export default function PullPlanBoard({
 
   async function removeMilestone(id: string) {
     if (!confirm("Remove this milestone?")) return;
+    const m = milestones.find(x => x.id === id);
     setMilestones(prev => prev.filter(m => m.id !== id));
     await supa.from("pull_milestones").delete().eq("id", id);
+    if (m?.source_task_id) {
+      setImportSkips(prev => new Set(prev).add(m.source_task_id!));
+      await supa.from("pull_import_skips").insert({ task_id: m.source_task_id });
+    }
   }
 
   async function addRole(name: string, color: string) {
@@ -548,7 +568,8 @@ export default function PullPlanBoard({
       ]);
       const isLeaf = (t: Task) => (childrenOf.get(t.id) ?? []).length === 0;
       const candidates = masterTasks.filter(t =>
-        isLeaf(t) && !t.is_constraint && t.start_date >= activeDate && !alreadyImported.has(t.id)
+        isLeaf(t) && !t.is_constraint && t.start_date >= activeDate
+        && !alreadyImported.has(t.id) && !importSkips.has(t.id)
       );
       if (candidates.length === 0) {
         setError("Nothing new to import — all master tasks past the active line are already on the board.");
@@ -798,6 +819,9 @@ export default function PullPlanBoard({
     const end = ticketEnd(t);
     if (!end) return;
     await patchTicket(t.id, { status: "promised", promised_end: end });
+  }
+  async function unpromiseTicket(t: PullTicket) {
+    await patchTicket(t.id, { status: "planned", promised_end: null });
   }
   async function completeTicket(t: PullTicket, varianceReason?: string, varianceNote?: string) {
     const end = ticketEnd(t);
@@ -1151,7 +1175,7 @@ export default function PullPlanBoard({
             className={canEdit(t) ? "cursor-grab" : "cursor-pointer"}>
             <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
               location={t.location_id ? locMap.get(t.location_id) : undefined}
-              responsible={memberMap.get(t.responsible_id ?? t.owner_id)}
+              responsible={t.responsible_id ? memberMap.get(t.responsible_id) : undefined}
               hid={isHid(t)} connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id} compact />
           </div>
         ))}
@@ -1254,16 +1278,10 @@ export default function PullPlanBoard({
               })}
               {/* Active line header stub */}
               <div className="shrink-0" style={{ width: LINE_W, backgroundColor: "#3f3f46" }} />
-              {/* Future zone: charcoal week headers with orange tick */}
-              {futureWeekList.map(d => (
-                <div key={d} className="relative flex shrink-0 items-center justify-center border-r border-[#5a5f65]"
-                  style={{ width: weekW, backgroundColor: "#4a4f55" }}>
-                  <span className="text-[10px] font-semibold text-white">
-                    {parseISODate(d).toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" })}
-                  </span>
-                  <span className="absolute bottom-0 left-1/2 h-[3px] w-3 -translate-x-1/2 bg-orange-400" />
-                </div>
-              ))}
+              {/* Inactive panel: no date grid — just a label */}
+              <div className="flex shrink-0 items-center justify-center" style={{ width: INACTIVE_W, backgroundColor: "#4a4f55" }}>
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Inactive / Unscheduled</span>
+              </div>
             </div>
 
             {/* ── Lanes ── */}
@@ -1278,7 +1296,7 @@ export default function PullPlanBoard({
                 onDoubleClick={e => onLaneDoubleClick(e, ll.lane.id, ll.top)}>
                 {/* Zone backgrounds */}
                 <div className="absolute inset-y-0 left-0" style={{ width: activeW, backgroundColor: ll.tints[0] }} />
-                <div className="absolute inset-y-0" style={{ left: activeW + LINE_W, width: futureW, backgroundColor: ll.tints[1] }} />
+                <div className="absolute inset-y-0" style={{ left: activeW + LINE_W, width: INACTIVE_W, backgroundColor: "#f4f4f5" }} />
                 {/* Weekend shading + day gridlines (active zone) */}
                 {activeDayList.map((d, i) => {
                   const dow = parseISODate(d).getDay();
@@ -1287,13 +1305,54 @@ export default function PullPlanBoard({
                       style={{ left: i * dayW, width: dayW, backgroundColor: dow === 0 || dow === 6 ? "rgba(0,0,0,.06)" : undefined }} />
                   );
                 })}
-                {/* Week gridlines (future zone) */}
-                {futureWeekList.map((d, i) => (
-                  <div key={d} className="absolute inset-y-0 border-r border-black/10"
-                    style={{ left: activeW + LINE_W + i * weekW, width: weekW }} />
-                ))}
-                {/* Lane name pill — sticky so it stays visible while scrolling */}
-                <div className="sticky left-1 top-1 z-10 w-fit pt-1 pl-1">
+
+                {/* Inactive panel: plain square cards, no date positioning, no arrows */}
+                <div
+                  className="absolute inset-y-0 flex flex-wrap content-start gap-1 overflow-y-auto p-1"
+                  style={{ left: activeW + LINE_W, width: INACTIVE_W }}>
+                  {ll.inactiveTickets.map(t => (
+                    <div key={t.id}
+                      onPointerDown={e => {
+                        if (canEdit(t) && !t.status.startsWith("done_")) {
+                          startDrag(e, { kind: "ticket", id: t.id, grabX: ticketH / 2, grabY: ticketH / 2 });
+                        } else handleTicketClick(t);
+                      }}
+                      className={canEdit(t) ? "cursor-grab" : "cursor-pointer"}
+                      style={{ touchAction: "none" }}>
+                      <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
+                        location={t.location_id ? locMap.get(t.location_id) : undefined}
+                        responsible={t.responsible_id ? memberMap.get(t.responsible_id) : undefined}
+                        width={ticketH} height={ticketH} hid={isHid(t)}
+                        connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id} compact />
+                    </div>
+                  ))}
+                  {ll.inactiveMilestones.map(m => (
+                    <div key={m.id}
+                      className="relative flex cursor-grab items-center justify-center"
+                      style={{ width: ticketH, height: ticketH, touchAction: "none" }}
+                      onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
+                      title={`Milestone: ${m.label} (inactive — drag onto the active zone)`}>
+                      <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-zinc-400 bg-zinc-200 shadow" />
+                      <span className="relative px-1 text-center text-[8px] font-bold leading-tight text-zinc-800">{m.label}</span>
+                    </div>
+                  ))}
+                  {ll.inactiveConstraints.map(c => (
+                    <div key={c.id}
+                      className="relative flex cursor-grab items-center justify-center"
+                      style={{ width: ticketH, height: ticketH, touchAction: "none" }}
+                      onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
+                      title={`Constraint: ${c.description} (inactive — drag onto the active zone)`}>
+                      <div className="absolute inset-1 rounded-full border-2 bg-zinc-300 shadow"
+                        style={{ borderColor: PRIORITY_RING[c.priority] }} />
+                      <span className="relative px-1.5 text-center text-[8px] font-bold leading-tight text-zinc-800">
+                        ⚠ {c.description}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Lane name pill — sticky and above tickets so it stays visible while scrolling */}
+                <div className="sticky left-1 top-1 z-30 w-fit pt-1 pl-1">
                   <span className="rounded bg-zinc-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow">
                     {ll.lane.name}
                     <button onClick={e => { e.stopPropagation(); removeLane(ll.lane.id); }}
@@ -1306,7 +1365,7 @@ export default function PullPlanBoard({
             {/* ── Tickets ── */}
             {laneLayouts.flatMap(ll => ll.list.map(t => {
               const pos = ticketPos.get(t.id);
-              if (!pos || t.start_date! > boardEnd) return null;
+              if (!pos) return null;
               const dragging = drag?.kind === "ticket" && drag.id === t.id && ghost;
               const left = dragging ? ghost!.x - (drag as { grabX: number }).grabX : pos.x;
               const top = dragging ? ghost!.y - (drag as { grabY: number }).grabY : HEADER_H + pos.y;
@@ -1325,7 +1384,7 @@ export default function PullPlanBoard({
                   }}>
                   <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
                     location={t.location_id ? locMap.get(t.location_id) : undefined}
-                    responsible={memberMap.get(t.responsible_id ?? t.owner_id)}
+                    responsible={t.responsible_id ? memberMap.get(t.responsible_id) : undefined}
                     width={pos.w} height={ticketH} hid={isHid(t)}
                     connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id}
                     outOfSeq={outOfSeqIds.has(t.id)}
@@ -1431,7 +1490,7 @@ export default function PullPlanBoard({
             {milestones.map(m => {
               if (!m.date) return null; // in the tray
               const pos = msPos.get(m.id);
-              if (!pos || m.date > boardEnd) return null;
+              if (!pos) return null;
               const size = msSize;
               const isFrom = connectFrom?.kind === "milestone" && connectFrom.id === m.id;
               const dragging = drag?.kind === "milestone" && drag.id === m.id && ghost;
@@ -1456,7 +1515,7 @@ export default function PullPlanBoard({
             {constraints.map(c => {
               if (!c.date) return null;
               const pos = cPos.get(c.id);
-              if (!pos || c.date > boardEnd) return null;
+              if (!pos) return null;
               const size = msSize;
               const isFrom = connectFrom?.kind === "constraint" && connectFrom.id === c.id;
               const dragging = drag?.kind === "constraint" && drag.id === c.id && ghost;
@@ -1573,6 +1632,7 @@ export default function PullPlanBoard({
             else if (type === "c") removeCLink(id);
           }}
           onPromise={() => promiseTicket(editingTicket)}
+          onUnpromise={() => unpromiseTicket(editingTicket)}
           onStart={() => patchTicket(editingTicket.id, { status: "in_progress" })}
           completionOutcome={completionOutcome(editingTicket)}
           onComplete={(reason, note) => completeTicket(editingTicket, reason, note)}

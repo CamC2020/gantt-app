@@ -159,6 +159,12 @@ export default function PullMyTasks({
                     ✓ Complete
                   </button>
                 )}
+                {t.status === "promised" && (
+                  <button onClick={() => patch(t.id, { status: "planned", promised_end: null })}
+                    className="rounded border border-zinc-300 px-3 py-1.5 text-xs font-semibold text-zinc-600 hover:bg-zinc-50">
+                    ↩ Unpromise
+                  </button>
+                )}
                 <label className="ml-auto flex items-center gap-1.5 text-xs text-zinc-600">
                   <input type="checkbox" checked={t.roadblock}
                     onChange={e => patch(t.id, { roadblock: e.target.checked, roadblock_note: e.target.checked ? rbDraft : "" })} />

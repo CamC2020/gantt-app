@@ -57,3 +57,10 @@ export function addWorkingDays(start: string, n: number, workSat: boolean, workS
   }
   return cur;
 }
+
+// Snaps forward to the nearest working day (returns `date` unchanged if it's already one).
+export function nextWorkingDay(date: string, workSat: boolean, workSun: boolean, holidays: Set<string>): string {
+  let d = date;
+  while (!isWorkingDay(d, workSat, workSun, holidays)) d = addDays(d, 1);
+  return d;
+}

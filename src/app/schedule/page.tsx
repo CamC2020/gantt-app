@@ -78,6 +78,10 @@ export default async function MasterSchedulePage() {
         members={profiles ?? []}
         roles={roles ?? []}
         readOnly={!isAdmin}
+        hideCrewCol
+        hideDtcCol
+        hideChampionCol
+        hideSupportCol
       />
     </div>
   );

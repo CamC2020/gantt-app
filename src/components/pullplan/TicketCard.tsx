@@ -68,7 +68,13 @@ export default function TicketCard({
     }
   }
   const showBoxes = spanDays.length > 1 && (width ?? 0) >= 40 && spanDays.some(d => d.dow === 0 || d.dow === 6);
-  const h = compact ? 74 : height ?? TICKET_H;
+  const h = height ?? (compact ? 74 : TICKET_H);
+
+  // Text scales with the card's height so it stays readable at any zoom level.
+  const descFont = Math.max(7, Math.min(14, Math.round(h * 0.16)));
+  const metaFont = Math.max(6, Math.min(11, Math.round(h * 0.115)));
+  const tagFont = Math.max(6, Math.min(10, Math.round(h * 0.1)));
+  const tagH = Math.max(12, Math.min(18, Math.round(h * 0.18)));
 
   return (
     <div
@@ -123,12 +129,12 @@ export default function TicketCard({
       )}
 
       {/* Location tag strip */}
-      <div className="flex h-[14px] shrink-0 items-center justify-between px-1" style={{ backgroundColor: stripColor }}>
-        <span className="truncate text-[8px] font-bold leading-none text-white">
+      <div className="flex shrink-0 items-center justify-between px-1" style={{ backgroundColor: stripColor, height: tagH }}>
+        <span className="truncate font-bold leading-none text-white" style={{ fontSize: tagFont }}>
           {hid ? `(hid) ${location?.name ?? ""}` : location?.name ?? ""}
         </span>
         <span className="flex items-center gap-0.5 leading-none">
-          {t.roadblock && <span className="text-[9px]" title={t.roadblock_note || "Roadblock"}>🚧</span>}
+          {t.roadblock && <span style={{ fontSize: tagFont + 1 }} title={t.roadblock_note || "Roadblock"}>🚧</span>}
           {(t.status === "promised" || t.status === "in_progress") && (
             <span className="inline-block h-2 w-2 rounded-full border border-white bg-zinc-900" title={`Promised: ${t.promised_end ?? ""}`} />
           )}
@@ -139,22 +145,22 @@ export default function TicketCard({
         </span>
       </div>
 
-      {/* Date line (hidden when zoomed out small) */}
-      {t.start_date && !compact && h >= 58 && (
-        <div className="px-1 pt-px text-[8px] font-semibold leading-tight text-black/60">
+      {/* Date line (hidden when very short) */}
+      {t.start_date && !compact && h >= 44 && (
+        <div className="px-1 pt-px font-semibold leading-tight text-black/60" style={{ fontSize: metaFont }}>
           {fmtShort(t.start_date)}{end && end !== t.start_date ? ` – ${fmtShort(end)}` : ""}
         </div>
       )}
 
       {/* Description */}
-      <div className={`flex-1 overflow-hidden px-1 pt-px text-center text-[10px] font-bold leading-[1.15] text-white ${compact ? "line-clamp-3" : ""}`}
-        style={{ textShadow: "0 1px 1px rgba(0,0,0,.25)" }}>
+      <div className={`flex-1 overflow-hidden px-1 pt-px text-center font-bold leading-[1.15] text-white ${compact ? "line-clamp-3" : ""}`}
+        style={{ textShadow: "0 1px 1px rgba(0,0,0,.25)", fontSize: descFont }}>
         {t.description}
       </div>
 
-      {/* Footer: crew | duration (hidden when zoomed out small) */}
-      {(compact || h >= 46) && (
-      <div className="flex shrink-0 items-center justify-between px-1 pb-0.5 text-[9px] font-bold text-white/90">
+      {/* Footer: crew | duration */}
+      {(compact || h >= 30) && (
+      <div className="flex shrink-0 items-center justify-between px-1 pb-0.5 font-bold text-white/90" style={{ fontSize: metaFont }}>
         <span title="Crew size">{t.crew_size != null ? <>👥 {t.crew_size}</> : respName}</span>
         <span title="Duration (days)">🕐 {t.duration}</span>
       </div>
