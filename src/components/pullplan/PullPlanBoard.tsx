@@ -380,6 +380,23 @@ export default function PullPlanBoard({
     setNewLaneName(""); setShowLaneForm(false);
   }
 
+  async function moveLane(id: string, dir: -1 | 1) {
+    const idx = lanes.findIndex(l => l.id === id);
+    const j = idx + dir;
+    if (idx < 0 || j < 0 || j >= lanes.length) return;
+    const a = lanes[idx], b = lanes[j];
+    const aOrder = a.sort_order, bOrder = b.sort_order;
+    const next = [...lanes];
+    next[idx] = { ...b, sort_order: aOrder };
+    next[j] = { ...a, sort_order: bOrder };
+    setLanes(next);
+    const [{ error: e1 }, { error: e2 }] = await Promise.all([
+      supa.from("pull_lanes").update({ sort_order: aOrder }).eq("id", b.id),
+      supa.from("pull_lanes").update({ sort_order: bOrder }).eq("id", a.id),
+    ]);
+    if (e1 || e2) setError((e1 ?? e2)!.message);
+  }
+
   async function removeLane(id: string) {
     if (!confirm("Remove this swimlane? Tickets in it move to the tray.")) return;
     const affectedIds = tickets.filter(t => t.lane_id === id).map(t => t.id);
@@ -1376,7 +1393,7 @@ export default function PullPlanBoard({
                 No swimlanes yet — click “+ Swimlane” to add areas or shifts.
               </div>
             )}
-            {laneLayouts.map(ll => (
+            {laneLayouts.map((ll, laneIdx) => (
               <div key={ll.lane.id} className="relative border-b border-zinc-300"
                 style={{ height: ll.height }}
                 onDoubleClick={e => onLaneDoubleClick(e, ll.lane.id, ll.top)}>
@@ -1441,10 +1458,18 @@ export default function PullPlanBoard({
 
                 {/* Lane name pill — sticky and above tickets so it stays visible while scrolling */}
                 <div className="sticky left-1 top-1 z-30 w-fit pt-1 pl-1">
-                  <span className="rounded bg-zinc-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow">
+                  <span className="flex items-center gap-1 rounded bg-zinc-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow">
+                    {laneIdx > 0 && (
+                      <button onClick={e => { e.stopPropagation(); moveLane(ll.lane.id, -1); }}
+                        className="text-white/60 hover:text-white" title="Move swimlane up">▲</button>
+                    )}
+                    {laneIdx < laneLayouts.length - 1 && (
+                      <button onClick={e => { e.stopPropagation(); moveLane(ll.lane.id, 1); }}
+                        className="text-white/60 hover:text-white" title="Move swimlane down">▼</button>
+                    )}
                     {ll.lane.name}
                     <button onClick={e => { e.stopPropagation(); removeLane(ll.lane.id); }}
-                      className="ml-1.5 text-white/50 hover:text-white" title="Remove swimlane">✕</button>
+                      className="ml-1 text-white/50 hover:text-white" title="Remove swimlane">✕</button>
                   </span>
                 </div>
               </div>
