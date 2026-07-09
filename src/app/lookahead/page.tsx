@@ -92,6 +92,7 @@ export default async function LookaheadPage() {
           hideDtcCol
           hideSupportCol
           championBadge
+          hideLegendOnPrint
         />
       )}
     </div>

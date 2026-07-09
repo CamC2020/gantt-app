@@ -113,7 +113,7 @@ export default function MsProjectGantt({
   hideStatHolidays = false, printTitle = "Master Schedule",
   fixedStart, fixedEnd,
   hideCrewCol = false, hideDtcCol = false, hideChampionCol = false, hideSupportCol = false,
-  championBadge = false,
+  championBadge = false, hideLegendOnPrint = false,
 }: {
   projectId: string;
   initialTasks: Task[];
@@ -131,6 +131,7 @@ export default function MsProjectGantt({
   hideChampionCol?: boolean;
   hideSupportCol?: boolean;
   championBadge?: boolean; // show champion initials as a circle badge on the bar instead of a column
+  hideLegendOnPrint?: boolean;
 }) {
   const router = useRouter();
   const supa   = useMemo(() => createClient(), []);
@@ -308,9 +309,8 @@ export default function MsProjectGantt({
         return r > latest ? r : latest;
       }, "");
       if (!rawReqStart) continue;
-      const reqStart = succ.is_milestone
-        ? rawReqStart
-        : nextWorkingDay(rawReqStart, succ.work_sat ?? false, succ.work_sun ?? false, holidaySet);
+      // Milestones snap off weekends too (using their own Sat/Sun flags, default false).
+      const reqStart = nextWorkingDay(rawReqStart, succ.work_sat ?? false, succ.work_sun ?? false, holidaySet);
       if (succ.start_date === reqStart) continue;
       const dur = diffInDays(succ.start_date, succ.end_date);
       m.set(succId, { ...succ, start_date: reqStart, end_date: addDays(reqStart, dur) });
@@ -443,7 +443,7 @@ export default function MsProjectGantt({
         return pred.end_date > latest ? pred.end_date : latest;
       }, "");
       const rawStart = addDays(reqStart, 1);
-      const start = task.is_milestone ? rawStart : nextWorkingDay(rawStart, task.work_sat ?? false, task.work_sun ?? false, holidaySet);
+      const start = nextWorkingDay(rawStart, task.work_sat ?? false, task.work_sun ?? false, holidaySet);
       if (start !== task.start_date) {
         const hasKidsTask = (cm.get(taskId) ?? []).length > 0;
         if (hasKidsTask) {
@@ -477,7 +477,7 @@ export default function MsProjectGantt({
       const r = addDays(pred.end_date, 1 + lag);
       return r > latest ? r : latest;
     }, "");
-    const reqStart = rawReqStart && !task.is_milestone
+    const reqStart = rawReqStart
       ? nextWorkingDay(rawReqStart, task.work_sat ?? false, task.work_sun ?? false, holidaySet)
       : rawReqStart;
 
@@ -560,7 +560,7 @@ export default function MsProjectGantt({
     if (isNaN(n) || n < 0) return;
     const isMilestone = n === 0;
     const ws = task.work_sat ?? false, wsu = task.work_sun ?? false;
-    const start = isMilestone ? task.start_date : nextWorkingDay(task.start_date, ws, wsu, holidaySet);
+    const start = nextWorkingDay(task.start_date, ws, wsu, holidaySet);
     const newEnd = isMilestone ? start : addWorkingDays(start, n - 1, ws, wsu, holidaySet);
     // Save is_milestone flag first, then cascade dates
     await supa.auth.getSession();
@@ -571,7 +571,7 @@ export default function MsProjectGantt({
   async function saveStartDate(taskId: string, newStartInput: string) {
     const task = taskMap.get(taskId); if (!task || !newStartInput) return;
     const ws = task.work_sat ?? false, wsu = task.work_sun ?? false;
-    const newStart = task.is_milestone ? newStartInput : nextWorkingDay(newStartInput, ws, wsu, holidaySet);
+    const newStart = nextWorkingDay(newStartInput, ws, wsu, holidaySet);
     const wDur = task.is_milestone ? 0 : Math.max(1, countWorkingDays(task.start_date, task.end_date, ws, wsu, holidaySet));
     const newEnd = task.is_milestone ? newStart : addWorkingDays(newStart, wDur - 1, ws, wsu, holidaySet);
     await applyDateChange(taskId, { start_date: newStart, end_date: newEnd });
@@ -633,12 +633,13 @@ export default function MsProjectGantt({
     const newSat = field === "work_sat" ? value : oldSat;
     const newSun = field === "work_sun" ? value : oldSun;
 
-    let newStart = task.start_date, newEnd = task.end_date;
+    // Snap the start forward if it no longer falls on a working day under the new
+    // flags (applies to milestones too — they still shouldn't sit on a weekend).
+    const newStart = nextWorkingDay(task.start_date, newSat, newSun, holidaySet);
+    let newEnd = newStart;
     if (!task.is_milestone) {
-      // Preserve the working-day count across the flag change, snapping the start
-      // forward if it no longer falls on a working day under the new flags.
+      // Preserve the working-day count across the flag change.
       const oldDur = Math.max(1, countWorkingDays(task.start_date, task.end_date, oldSat, oldSun, holidaySet));
-      newStart = nextWorkingDay(task.start_date, newSat, newSun, holidaySet);
       newEnd = addWorkingDays(newStart, oldDur - 1, newSat, newSun, holidaySet);
     }
 
@@ -691,8 +692,13 @@ export default function MsProjectGantt({
     if (taskId === targetId) return;
     const task = taskMap.get(taskId); const target = taskMap.get(targetId);
     if (!task || !target) return;
-    // Drop onto a summary task = insert as first child of that summary
+    // Drop onto a summary task = insert as first child of that summary.
+    // This is easy to trigger by accident (a slight trackpad jitter while
+    // grabbing the drag handle), so confirm before nesting under a new parent.
     const targetHasKids = (cm.get(targetId) ?? []).length > 0;
+    if (targetHasKids && task.parent_id !== targetId) {
+      if (!confirm(`Make "${task.title}" a sub-task of "${target.title}"?`)) return;
+    }
     const newParentId = targetHasKids ? targetId : (target.parent_id ?? null);
     const insertBeforeId = targetHasKids ? null : targetId; // null = prepend
 
@@ -1041,11 +1047,11 @@ export default function MsProjectGantt({
   </div>
 </div>
 
-<!-- ── LEGEND ── -->
+${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
 <div style="padding:5px 10px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;border-top:1px solid #e2e8f0;background:#f8fafc">
   <span style="font-size:8px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.08em;margin-right:4px">Legend</span>
   ${legendHTML}
-</div>
+</div>`}
 
 <!-- ── FOOTER ── -->
 <div class="page-footer">
@@ -1489,12 +1495,12 @@ export default function MsProjectGantt({
                   )}
 
                   {/* Actions */}
-                  <div className="shrink-0 flex items-center justify-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" style={{ width: COL.act }}>
+                  <div className="shrink-0 flex items-center justify-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity" style={{ width: COL.act }}>
                     {!readOnly && (
                       <>
-                        {lvl > 0 && <button onClick={() => outdentTask(task.id)} className="text-zinc-400 hover:text-zinc-700 text-[11px] px-0.5" title="Outdent">←</button>}
-                        <button onClick={() => indentTask(task.id)} className="text-zinc-400 hover:text-zinc-700 text-[11px] px-0.5" title="Indent">→</button>
-                        <button onClick={() => deleteTask(task.id)} className="text-red-400 hover:text-red-600 text-[11px] px-0.5" title="Delete">✕</button>
+                        {lvl > 0 && <button onClick={() => outdentTask(task.id)} className="text-zinc-400 hover:text-zinc-700 text-[13px] px-1 py-0.5" title="Outdent (promote to the parent level)">←</button>}
+                        <button onClick={() => indentTask(task.id)} className="text-zinc-400 hover:text-zinc-700 text-[13px] px-1 py-0.5" title="Indent (make a child of the task above)">→</button>
+                        <button onClick={() => deleteTask(task.id)} className="text-red-400 hover:text-red-600 text-[13px] px-1 py-0.5" title="Delete">✕</button>
                       </>
                     )}
                   </div>

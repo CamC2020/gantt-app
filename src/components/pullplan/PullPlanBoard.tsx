@@ -22,7 +22,8 @@ const LINE_W = 14;        // active line bar
 const LANE_PAD = 8;
 const HEADER_H = 44;
 const ACTIVE_WEEKS_BEFORE = 2;  // active zone shows 2 weeks before the active line
-const INACTIVE_W = 240;         // fixed-width "Inactive" holding panel (no date grid)
+const MIN_INACTIVE_W = 240;     // minimum width of the "Inactive" holding panel (no date grid)
+const INACTIVE_GAP = 4;
 
 const LANE_TINTS: [string, string][] = [
   ["#eaf6f2", "#dff0ea"], // mint  [active side, inactive side]
@@ -138,7 +139,7 @@ export default function PullPlanBoard({
   // item's start date, it flips into the date-positioned active zone automatically.
   const dayW = Math.round(BASE_DAY_W * zoom);
   const ticketH = Math.max(28, Math.round(dayW * 1.1)); // ~square for a 1-day ticket
-  const msSize = Math.max(30, Math.round(54 * zoom));   // milestone/constraint circle scales with zoom
+  const msSize = Math.max(20, Math.round(ticketH * 0.75));   // milestone/constraint circle — never taller than a ticket
   // Active zone starts at least 2 weeks before the active line, extended back
   // to the earliest placed ticket so nothing is cut off.
   const earliestStart = tickets.reduce<string | null>(
@@ -150,7 +151,6 @@ export default function PullPlanBoard({
   );
   const activeDays = diffInDays(activeStart, activeDate) + 1;
   const activeW = activeDays * dayW;
-  const totalW = activeW + LINE_W + INACTIVE_W;
 
   // Dates beyond the active line clamp to the line itself — a bar that runs past
   // it is visually cut off there, since anything beyond is the inactive panel.
@@ -229,6 +229,21 @@ export default function PullPlanBoard({
   }, [lanes, tickets, milestones, constraints, ticketH, activeDate]);
   const lanesH = laneLayouts.reduce((a, l) => a + l.height, 0);
 
+  // Inactive panel widens (never scrolls) to fit however many square cards a lane holds.
+  const inactiveW = useMemo(() => {
+    let maxW = MIN_INACTIVE_W;
+    for (const ll of laneLayouts) {
+      const count = ll.inactiveTickets.length + ll.inactiveMilestones.length + ll.inactiveConstraints.length;
+      if (count === 0) continue;
+      const rowsFit = Math.max(1, Math.floor((ll.height - LANE_PAD) / (ticketH + INACTIVE_GAP)));
+      const cols = Math.ceil(count / rowsFit);
+      const w = cols * (ticketH + INACTIVE_GAP) + LANE_PAD;
+      if (w > maxW) maxW = w;
+    }
+    return maxW;
+  }, [laneLayouts, ticketH]);
+  const totalW = activeW + LINE_W + inactiveW;
+
   const ticketPos = useMemo(() => {
     const m = new Map<string, { x: number; y: number; w: number; laneTop: number }>();
     for (const ll of laneLayouts) {
@@ -304,10 +319,18 @@ export default function PullPlanBoard({
 
   async function deleteTicket(id: string) {
     const t = ticketMap.get(id);
+    // Delete against the DB first — if RLS silently blocks it (0 rows affected is
+    // NOT an error from Supabase), a stale row would otherwise linger and reappear
+    // on the next reload/import while the UI thinks it's gone.
+    const { error: err, data: deleted } = await supa.from("pull_tickets").delete().eq("id", id).select("id");
+    if (err) { setError(err.message); return; }
+    if (!deleted || deleted.length === 0) {
+      setError("Could not delete this ticket — you may not have permission (only the owner, responsible person, or an admin can delete it).");
+      return;
+    }
     setTickets(prev => prev.filter(t => t.id !== id));
     setDeps(prev => prev.filter(d => d.ticket_id !== id && d.predecessor_id !== id));
     setEditing(null);
-    await supa.from("pull_tickets").delete().eq("id", id);
     if (t?.source_task_id) {
       setImportSkips(prev => new Set(prev).add(t.source_task_id!));
       await supa.from("pull_import_skips").insert({ task_id: t.source_task_id }); // ignore duplicate-key errors
@@ -395,10 +418,15 @@ export default function PullPlanBoard({
   }
 
   async function deleteConstraint(id: string) {
+    const { error: err, data: deleted } = await supa.from("pull_constraints").delete().eq("id", id).select("id");
+    if (err) { setError(err.message); return; }
+    if (!deleted || deleted.length === 0) {
+      setError("Could not delete this constraint — you may not have permission.");
+      return;
+    }
     setConstraints(prev => prev.filter(c => c.id !== id));
     setCLinks(prev => prev.filter(l => l.constraint_id !== id));
     setEditingConstraint(null);
-    await supa.from("pull_constraints").delete().eq("id", id);
   }
 
   async function addCLink(constraintId: string, ticketId: string) {
@@ -420,8 +448,13 @@ export default function PullPlanBoard({
   async function removeMilestone(id: string) {
     if (!confirm("Remove this milestone?")) return;
     const m = milestones.find(x => x.id === id);
+    const { error: err, data: deleted } = await supa.from("pull_milestones").delete().eq("id", id).select("id");
+    if (err) { setError(err.message); return; }
+    if (!deleted || deleted.length === 0) {
+      setError("Could not delete this milestone — you may not have permission.");
+      return;
+    }
     setMilestones(prev => prev.filter(m => m.id !== id));
-    await supa.from("pull_milestones").delete().eq("id", id);
     if (m?.source_task_id) {
       setImportSkips(prev => new Set(prev).add(m.source_task_id!));
       await supa.from("pull_import_skips").insert({ task_id: m.source_task_id });
@@ -727,17 +760,20 @@ export default function PullPlanBoard({
 
       // Build lookahead tasks
       const pullToTask = new Map<string, string>(); // pull item id -> new task id
+      const ticketSortOrder = new Map<string, number>(); // pull ticket id -> assigned sort_order
       const newTasks: Record<string, unknown>[] = [];
       let idx = 0;
       const sortedT = [...expTickets].sort((a, b) => a.start_date!.localeCompare(b.start_date!));
       for (const t of sortedT) {
         const id = crypto.randomUUID();
         pullToTask.set(t.id, id);
+        const so = idx++;
+        ticketSortOrder.set(t.id, so);
         newTasks.push({
           id, project_id: lookaheadProjectId, title: t.description,
           start_date: t.start_date, end_date: ticketEnd(t),
           champion_id: t.responsible_id, status: t.status === "in_progress" ? "in_progress" : "not_started",
-          parent_id: null, sort_order: idx++,
+          parent_id: null, sort_order: so,
           work_sat: t.work_sat, work_sun: t.work_sun,
           is_milestone: false, is_constraint: false,
           crew_size: t.crew_size, role_id: t.role_id,
@@ -756,14 +792,20 @@ export default function PullPlanBoard({
           crew_size: null, role_id: null,
         });
       }
+      // Constraints render one row above the earliest ticket they block; unlinked
+      // constraints fall after everything else.
+      let unlinkedIdx = idx;
       for (const c of expConstraints) {
         const id = crypto.randomUUID();
         pullToTask.set(c.id, id);
+        const linkedTicketIds = cLinks.filter(l => l.constraint_id === c.id).map(l => l.ticket_id);
+        const linkedSortOrders = linkedTicketIds.map(tid => ticketSortOrder.get(tid)).filter((n): n is number => n !== undefined);
+        const so = linkedSortOrders.length > 0 ? Math.min(...linkedSortOrders) - 0.5 : unlinkedIdx++;
         newTasks.push({
           id, project_id: lookaheadProjectId, title: c.description,
           start_date: c.date, end_date: c.date,
           champion_id: c.responsible_id, status: "not_started",
-          parent_id: null, sort_order: idx++,
+          parent_id: null, sort_order: so,
           work_sat: false, work_sun: false,
           is_milestone: false, is_constraint: true,
           crew_size: null, role_id: null,
@@ -886,7 +928,9 @@ export default function PullPlanBoard({
       if (m.kind === "line") {
         if (moved && boardRef.current) {
           const p = boardXY(ev);
-          saveActiveDate(dateForX(p.x));
+          // Each day-column of drag shifts the active line by a full week, not a day.
+          const deltaCols = Math.round((p.x - activeW) / dayW);
+          saveActiveDate(addDays(activeDate, deltaCols * 7));
         }
         return;
       }
@@ -1279,7 +1323,7 @@ export default function PullPlanBoard({
               {/* Active line header stub */}
               <div className="shrink-0" style={{ width: LINE_W, backgroundColor: "#3f3f46" }} />
               {/* Inactive panel: no date grid — just a label */}
-              <div className="flex shrink-0 items-center justify-center" style={{ width: INACTIVE_W, backgroundColor: "#4a4f55" }}>
+              <div className="flex shrink-0 items-center justify-center" style={{ width: inactiveW, backgroundColor: "#4a4f55" }}>
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Inactive / Unscheduled</span>
               </div>
             </div>
@@ -1296,7 +1340,7 @@ export default function PullPlanBoard({
                 onDoubleClick={e => onLaneDoubleClick(e, ll.lane.id, ll.top)}>
                 {/* Zone backgrounds */}
                 <div className="absolute inset-y-0 left-0" style={{ width: activeW, backgroundColor: ll.tints[0] }} />
-                <div className="absolute inset-y-0" style={{ left: activeW + LINE_W, width: INACTIVE_W, backgroundColor: "#f4f4f5" }} />
+                <div className="absolute inset-y-0" style={{ left: activeW + LINE_W, width: inactiveW, backgroundColor: "#f4f4f5" }} />
                 {/* Weekend shading + day gridlines (active zone) */}
                 {activeDayList.map((d, i) => {
                   const dow = parseISODate(d).getDay();
@@ -1308,8 +1352,8 @@ export default function PullPlanBoard({
 
                 {/* Inactive panel: plain square cards, no date positioning, no arrows */}
                 <div
-                  className="absolute inset-y-0 flex flex-wrap content-start gap-1 overflow-y-auto p-1"
-                  style={{ left: activeW + LINE_W, width: INACTIVE_W }}>
+                  className="absolute inset-y-0 flex flex-col flex-wrap content-start gap-1 p-1"
+                  style={{ left: activeW + LINE_W, width: inactiveW }}>
                   {ll.inactiveTickets.map(t => (
                     <div key={t.id}
                       onPointerDown={e => {
@@ -1331,7 +1375,8 @@ export default function PullPlanBoard({
                       className="relative flex cursor-grab items-center justify-center"
                       style={{ width: ticketH, height: ticketH, touchAction: "none" }}
                       onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
-                      title={`Milestone: ${m.label} (inactive — drag onto the active zone)`}>
+                      onDoubleClick={() => removeMilestone(m.id)}
+                      title={`Milestone: ${m.label} (inactive — drag onto the active zone, double-click to remove)`}>
                       <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-zinc-400 bg-zinc-200 shadow" />
                       <span className="relative px-1 text-center text-[8px] font-bold leading-tight text-zinc-800">{m.label}</span>
                     </div>
@@ -1341,7 +1386,8 @@ export default function PullPlanBoard({
                       className="relative flex cursor-grab items-center justify-center"
                       style={{ width: ticketH, height: ticketH, touchAction: "none" }}
                       onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
-                      title={`Constraint: ${c.description} (inactive — drag onto the active zone)`}>
+                      onDoubleClick={() => deleteConstraint(c.id)}
+                      title={`Constraint: ${c.description} (inactive — drag onto the active zone, click to edit, double-click to remove)`}>
                       <div className="absolute inset-1 rounded-full border-2 bg-zinc-300 shadow"
                         style={{ borderColor: PRIORITY_RING[c.priority] }} />
                       <span className="relative px-1.5 text-center text-[8px] font-bold leading-tight text-zinc-800">
