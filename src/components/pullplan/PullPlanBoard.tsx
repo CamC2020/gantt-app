@@ -103,6 +103,7 @@ export default function PullPlanBoard({
   const dayW = Math.round(BASE_DAY_W * zoom);
   const weekW = Math.round(BASE_WEEK_W * zoom);
   const ticketH = Math.max(32, Math.round(78 * zoom)); // ticket height scales with zoom
+  const msSize = Math.max(40, Math.round(74 * zoom));  // milestone diamond scales with zoom
   // Active zone starts at least 2 weeks before the active line, extended back
   // to the earliest placed ticket so nothing is cut off.
   const earliestStart = tickets.reduce<string | null>(
@@ -672,12 +673,14 @@ export default function PullPlanBoard({
                   <div key={d} className="absolute inset-y-0 border-r border-black/10"
                     style={{ left: activeW + LINE_W + i * weekW, width: weekW }} />
                 ))}
-                {/* Lane name pill */}
-                <span className="absolute left-1 top-1 z-10 rounded bg-zinc-500/80 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white">
-                  {ll.lane.name}
-                  <button onClick={e => { e.stopPropagation(); removeLane(ll.lane.id); }}
-                    className="ml-1.5 text-white/50 hover:text-white" title="Remove swimlane">✕</button>
-                </span>
+                {/* Lane name pill — sticky so it stays visible while scrolling */}
+                <div className="sticky left-1 top-1 z-10 w-fit pt-1 pl-1">
+                  <span className="rounded bg-zinc-500/90 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow">
+                    {ll.lane.name}
+                    <button onClick={e => { e.stopPropagation(); removeLane(ll.lane.id); }}
+                      className="ml-1.5 text-white/50 hover:text-white" title="Remove swimlane">✕</button>
+                  </span>
+                </div>
               </div>
             ))}
 
@@ -755,15 +758,15 @@ export default function PullPlanBoard({
                   const t = ticketMap.get(l.ticket_id);
                   if (!m || !tp || !t) return null;
                   const mx = xForDate(m.date) + dayW / 2;
-                  const my = 14 + 37; // milestone diamond center (relative to lanes area)
+                  const my = 14 + msSize / 2; // milestone diamond center (relative to lanes area)
                   const bad = outOfSeqIds.has(t.id) &&
                     (l.ticket_is_pred ? ticketEnd(t)! >= m.date : t.start_date! <= m.date);
                   let x1: number, y1: number, x2: number, y2: number;
                   if (l.ticket_is_pred) {
                     x1 = tp.x + tp.w; y1 = tp.y + ticketH / 2;
-                    x2 = mx - 30; y2 = my;
+                    x2 = mx - msSize / 2 - 2; y2 = my;
                   } else {
-                    x1 = mx + 30; y1 = my;
+                    x1 = mx + msSize / 2 + 2; y1 = my;
                     x2 = tp.x; y2 = tp.y + ticketH / 2;
                   }
                   const c = Math.max(16, Math.min(50, (x2 - x1) / 2));
@@ -784,7 +787,7 @@ export default function PullPlanBoard({
             {milestones.map(m => {
               const x = xForDate(m.date);
               if (x < 0 || m.date > boardEnd) return null;
-              const size = 74;
+              const size = msSize;
               const isFrom = connectFrom?.kind === "milestone" && connectFrom.id === m.id;
               return (
                 <div key={m.id} className={`absolute z-20 flex items-center justify-center ${connectMode ? "cursor-pointer" : ""}`}
@@ -794,7 +797,8 @@ export default function PullPlanBoard({
                   title={`Milestone: ${m.label} — ${m.date}${connectMode ? " (click to connect)" : " (double-click to remove)"}`}>
                   <div className="absolute inset-0 rotate-45 rounded-[3px] shadow-md"
                     style={{ backgroundColor: "#4fd1c5", outline: isFrom ? "3px solid #1A3560" : undefined }} />
-                  <span className="relative px-2 text-center text-[9px] font-bold leading-tight text-white">{m.label}</span>
+                  <span className="relative px-2 text-center font-bold leading-tight text-white"
+                    style={{ fontSize: Math.max(7, Math.round(9 * zoom)) }}>{m.label}</span>
                 </div>
               );
             })}
