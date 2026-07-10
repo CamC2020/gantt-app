@@ -41,6 +41,7 @@ export default function TicketCard({
   onToggleWeekend?: (dow: 0 | 6) => void; // click a weekend day-box to make it a workday
 }) {
   const bodyColor = hid ? "#c8cdd3" : role?.color ?? "#9aa2ab";
+  const stripColor = hid ? "#a8adb4" : location?.color ?? "#6b7280";
   const end = ticketEnd(t);
   const respName = responsible?.full_name?.split(" ")[0] || responsible?.email.split("@")[0] || "";
 
@@ -69,6 +70,8 @@ export default function TicketCard({
   // the name itself is never clipped/truncated (wraps and can overflow the box
   // instead of being cut off), so it's always visible whether zoomed in or out.
   const descFont = Math.max(10, Math.round(h * 0.2));
+  const tagFont = Math.max(7, Math.min(11, Math.round(h * 0.11)));
+  const tagH = Math.max(12, Math.min(18, Math.round(h * 0.18)));
 
   return (
     <div
@@ -126,8 +129,15 @@ export default function TicketCard({
           title="Out of sequence — starts before a predecessor finishes">!</span>
       )}
 
+      {/* Location tag strip */}
+      <div className="flex shrink-0 items-center px-1" style={{ backgroundColor: stripColor, height: tagH }}>
+        <span className="truncate font-bold leading-none text-white" style={{ fontSize: tagFont }}>
+          {hid ? `(hid) ${location?.name ?? ""}` : location?.name ?? ""}
+        </span>
+      </div>
+
       {/* Task name only — left-aligned, vertically centered, never clipped */}
-      <div className="flex h-full items-center overflow-visible px-1.5 text-left font-bold leading-[1.15] text-white"
+      <div className="flex flex-1 items-center overflow-visible px-1.5 text-left font-bold leading-[1.15] text-white"
         style={{ textShadow: "0 1px 1px rgba(0,0,0,.25)", fontSize: descFont }}>
         {t.description}
       </div>
