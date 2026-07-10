@@ -22,9 +22,10 @@ const BASE_DAY_W = 36;    // active-zone day column
 const LINE_W = 14;        // active line bar
 const LANE_PAD = 8;
 const HEADER_H = 44;
-const ACTIVE_WEEKS_BEFORE = 2;  // active zone shows 2 weeks before the active line
-const MIN_INACTIVE_W = 240;     // minimum width of the "Inactive" holding panel (no date grid)
-const INACTIVE_GAP = 4;
+const ACTIVE_WEEKS_BEFORE = 1;  // active zone shows 1 week before the active line
+const INACTIVE_SIDEBAR_W = 200; // fixed-width sidebar listing not-yet-active items
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 4;
 
 const LANE_TINTS: [string, string][] = [
   ["#eaf6f2", "#dff0ea"], // mint  [active side, inactive side]
@@ -203,21 +204,15 @@ export default function PullPlanBoard({
   const trayTickets = tickets.filter(t => !t.start_date || !t.lane_id || !laneIds.has(t.lane_id));
 
   // ── Lane layout (manual rows via row_index; lane grows, min 2 rows) ────────
-  // "Active" items (start_date <= activeDate) are positioned by date and stacked
-  // via row_index. "Inactive" items (start_date > activeDate) are plain squares
-  // in the lane's Inactive panel — no date position, no row_index, no arrows.
+  // Swimlanes and scheduling only matter for "active" items (start_date <= the
+  // active line). Anything not yet active lives in the flat Inactive sidebar
+  // instead, regardless of lane — it has no date position, no row_index, no arrows.
   const laneLayouts = useMemo(() => {
     let top = 0;
     return lanes.map((lane, idx) => {
-      const allT = tickets.filter(t => t.lane_id === lane.id && t.start_date);
-      const allM = milestones.filter(m => m.lane_id === lane.id && m.date);
-      const allC = constraints.filter(c => c.lane_id === lane.id && c.date);
-      const list = allT.filter(t => t.start_date! <= activeDate);
-      const laneMs = allM.filter(m => m.date! <= activeDate);
-      const laneCs = allC.filter(c => c.date! <= activeDate);
-      const inactiveTickets = allT.filter(t => t.start_date! > activeDate);
-      const inactiveMilestones = allM.filter(m => m.date! > activeDate);
-      const inactiveConstraints = allC.filter(c => c.date! > activeDate);
+      const list = tickets.filter(t => t.lane_id === lane.id && t.start_date && t.start_date <= activeDate);
+      const laneMs = milestones.filter(m => m.lane_id === lane.id && m.date && m.date <= activeDate);
+      const laneCs = constraints.filter(c => c.lane_id === lane.id && c.date && c.date <= activeDate);
       const maxRow = Math.max(
         list.reduce((m, t) => Math.max(m, t.row_index), 0),
         laneMs.reduce((m, x) => Math.max(m, x.row_index), 0),
@@ -225,30 +220,19 @@ export default function PullPlanBoard({
       );
       const rows = Math.max(2, maxRow + 2); // spare row at the bottom for dropping
       const height = rows * (ticketH + LANE_PAD) + LANE_PAD;
-      const layout = {
-        lane, list, rows, height, top, tints: LANE_TINTS[idx % LANE_TINTS.length],
-        inactiveTickets, inactiveMilestones, inactiveConstraints,
-      };
+      const layout = { lane, list, rows, height, top, tints: LANE_TINTS[idx % LANE_TINTS.length] };
       top += height;
       return layout;
     });
   }, [lanes, tickets, milestones, constraints, ticketH, activeDate]);
   const lanesH = laneLayouts.reduce((a, l) => a + l.height, 0);
+  const totalW = activeW + LINE_W;
 
-  // Inactive panel widens (never scrolls) to fit however many square cards a lane holds.
-  const inactiveW = useMemo(() => {
-    let maxW = MIN_INACTIVE_W;
-    for (const ll of laneLayouts) {
-      const count = ll.inactiveTickets.length + ll.inactiveMilestones.length + ll.inactiveConstraints.length;
-      if (count === 0) continue;
-      const rowsFit = Math.max(1, Math.floor((ll.height - LANE_PAD) / (ticketH + INACTIVE_GAP)));
-      const cols = Math.ceil(count / rowsFit);
-      const w = cols * (ticketH + INACTIVE_GAP) + LANE_PAD;
-      if (w > maxW) maxW = w;
-    }
-    return maxW;
-  }, [laneLayouts, ticketH]);
-  const totalW = activeW + LINE_W + inactiveW;
+  // Flat "Inactive / Not Yet Active" sidebar list — anything with a date past the
+  // active line, no matter what lane it's assigned to.
+  const inactiveTickets = tickets.filter(t => t.start_date && t.start_date > activeDate);
+  const inactiveMilestones = milestones.filter(m => m.date && m.date > activeDate);
+  const inactiveConstraints = constraints.filter(c => c.date && c.date > activeDate);
 
   const ticketPos = useMemo(() => {
     const m = new Map<string, { x: number; y: number; w: number; laneTop: number }>();
@@ -1281,11 +1265,32 @@ export default function PullPlanBoard({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Ctrl+wheel zoom
+  // Mouse wheel always zooms the active zone (no modifier needed).
   function onWheel(e: React.WheelEvent) {
-    if (!e.ctrlKey) return;
     e.preventDefault();
-    setZoom(z => Math.min(2.5, Math.max(0.5, z * (e.deltaY < 0 ? 1.1 : 0.9))));
+    setZoom(z => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * (e.deltaY < 0 ? 1.1 : 0.9))));
+  }
+
+  // Press-and-hold the middle mouse button to pan the active zone.
+  const panRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
+  function onBoardMouseDown(e: React.MouseEvent) {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    const el = e.currentTarget as HTMLDivElement;
+    panRef.current = { x: e.clientX, y: e.clientY, scrollLeft: el.scrollLeft, scrollTop: el.scrollTop };
+    function onMove(ev: MouseEvent) {
+      const p = panRef.current;
+      if (!p) return;
+      el.scrollLeft = p.scrollLeft - (ev.clientX - p.x);
+      el.scrollTop = p.scrollTop - (ev.clientY - p.y);
+    }
+    function onUp() {
+      panRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   }
 
   // Double-click empty lane space creates a ticket in place
@@ -1333,10 +1338,10 @@ export default function PullPlanBoard({
           📌 Promise Now{promiseNowTargets.length > 0 ? ` (${promiseNowTargets.length})` : ""}
         </button>
         <div className="ml-2 flex items-center gap-1">
-          <button onClick={() => setZoom(z => Math.max(0.5, z - 0.15))}
+          <button onClick={() => setZoom(z => Math.max(MIN_ZOOM, z - 0.15))}
             className="rounded border border-zinc-300 px-2 py-1 text-sm text-zinc-600 hover:bg-zinc-50">−</button>
           <span className="w-10 text-center text-xs text-zinc-500">{Math.round(zoom * 100)}%</span>
-          <button onClick={() => setZoom(z => Math.min(2.5, z + 0.15))}
+          <button onClick={() => setZoom(z => Math.min(MAX_ZOOM, z + 0.15))}
             className="rounded border border-zinc-300 px-2 py-1 text-sm text-zinc-600 hover:bg-zinc-50">+</button>
         </div>
         {connectMode && (
@@ -1463,7 +1468,7 @@ export default function PullPlanBoard({
       </div>
 
       {/* ── Sidebar + Board ── */}
-      <div className="flex overflow-hidden rounded-lg border border-zinc-300 bg-white" style={{ height: "68vh" }}>
+      <div className="flex overflow-hidden rounded-lg border border-zinc-300 bg-white" style={{ height: "82vh" }}>
         <IconRail open={panel} onToggle={p => setPanel(cur => (cur === p ? null : p))} />
 
         {panel === "constraints" && (
@@ -1505,8 +1510,9 @@ export default function PullPlanBoard({
           </PanelShell>
         )}
 
-        {/* Scrollable board */}
-        <div className="flex-1 overflow-auto" onWheel={onWheel} onClick={() => { if (showActivePicker) setShowActivePicker(false); }}>
+        {/* Scrollable board — wheel zooms, middle-click-drag pans, no visible scrollbars */}
+        <div className="no-scrollbar flex-1 overflow-auto" onWheel={onWheel} onMouseDown={onBoardMouseDown}
+          onClick={() => { if (showActivePicker) setShowActivePicker(false); }}>
           <div ref={boardRef} className="relative" style={{ width: totalW, height: HEADER_H + Math.max(lanesH, 200) }}>
 
             {/* ── Header ── */}
@@ -1533,10 +1539,6 @@ export default function PullPlanBoard({
               })}
               {/* Active line header stub */}
               <div className="shrink-0" style={{ width: LINE_W, backgroundColor: "#3f3f46" }} />
-              {/* Inactive panel: no date grid — just a label */}
-              <div className="flex shrink-0 items-center justify-center" style={{ width: inactiveW, backgroundColor: "#4a4f55" }}>
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Inactive / Unscheduled</span>
-              </div>
             </div>
 
             {/* ── Lanes ── */}
@@ -1549,9 +1551,8 @@ export default function PullPlanBoard({
               <div key={ll.lane.id} className="relative border-b border-zinc-300"
                 style={{ height: ll.height }}
                 onDoubleClick={e => onLaneDoubleClick(e, ll.lane.id, ll.top)}>
-                {/* Zone backgrounds */}
+                {/* Zone background */}
                 <div className="absolute inset-y-0 left-0" style={{ width: activeW, backgroundColor: ll.tints[0] }} />
-                <div className="absolute inset-y-0" style={{ left: activeW + LINE_W, width: inactiveW, backgroundColor: "#f4f4f5" }} />
                 {/* Weekend shading + day gridlines (active zone) */}
                 {activeDayList.map((d, i) => {
                   const dow = parseISODate(d).getDay();
@@ -1560,53 +1561,6 @@ export default function PullPlanBoard({
                       style={{ left: i * dayW, width: dayW, backgroundColor: dow === 0 || dow === 6 ? "rgba(0,0,0,.06)" : undefined }} />
                   );
                 })}
-
-                {/* Inactive panel: plain square cards, no date positioning, no arrows */}
-                <div
-                  className="absolute inset-y-0 flex flex-col flex-wrap content-start gap-1 p-1"
-                  style={{ left: activeW + LINE_W, width: inactiveW }}>
-                  {ll.inactiveTickets.map(t => (
-                    <div key={t.id}
-                      onPointerDown={e => {
-                        if (canEdit(t) && !t.status.startsWith("done_")) {
-                          startDrag(e, { kind: "ticket", id: t.id, grabX: ticketH / 2, grabY: ticketH / 2 });
-                        } else handleTicketClick(t);
-                      }}
-                      className={canEdit(t) ? "cursor-grab" : "cursor-pointer"}
-                      style={{ touchAction: "none" }}>
-                      <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
-                        location={t.location_id ? locMap.get(t.location_id) : undefined}
-                        responsible={t.responsible_id ? memberMap.get(t.responsible_id) : undefined}
-                        width={ticketH} height={ticketH} hid={isHid(t)}
-                        connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id} compact />
-                    </div>
-                  ))}
-                  {ll.inactiveMilestones.map(m => (
-                    <div key={m.id}
-                      className="relative flex cursor-grab items-center justify-center"
-                      style={{ width: ticketH, height: ticketH, touchAction: "none" }}
-                      onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
-                      onDoubleClick={() => removeMilestone(m.id)}
-                      title={`Milestone: ${m.label} (inactive — drag onto the active zone, double-click to remove)`}>
-                      <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-zinc-400 bg-zinc-200 shadow" />
-                      <span className="relative px-1 text-center text-[8px] font-bold leading-tight text-zinc-800">{m.label}</span>
-                    </div>
-                  ))}
-                  {ll.inactiveConstraints.map(c => (
-                    <div key={c.id}
-                      className="relative flex cursor-grab items-center justify-center"
-                      style={{ width: ticketH, height: ticketH, touchAction: "none" }}
-                      onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
-                      onDoubleClick={() => deleteConstraint(c.id)}
-                      title={`Constraint: ${c.description} (inactive — drag onto the active zone, click to edit, double-click to remove)`}>
-                      <div className="absolute inset-1 rounded-full border-2 bg-zinc-300 shadow"
-                        style={{ borderColor: PRIORITY_RING[c.priority] }} />
-                      <span className="relative px-1.5 text-center text-[8px] font-bold leading-tight text-zinc-800">
-                        ⚠ {c.description}
-                      </span>
-                    </div>
-                  ))}
-                </div>
 
                 {/* Lane name pill — sticky and above tickets so it stays visible while scrolling */}
                 <div className="sticky left-1 top-1 z-30 w-fit pt-1 pl-1">
@@ -1830,6 +1784,60 @@ export default function PullPlanBoard({
                 </button>
               </div>
             )}
+          </div>
+        </div>
+
+        {/* ── Inactive / Not Yet Active sidebar ── */}
+        <div className="no-scrollbar flex shrink-0 flex-col gap-1 overflow-y-auto border-l border-zinc-300 bg-zinc-100 p-1.5"
+          style={{ width: INACTIVE_SIDEBAR_W }}>
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+            Inactive / Not Yet Active
+          </span>
+          {inactiveTickets.length + inactiveMilestones.length + inactiveConstraints.length === 0 && (
+            <span className="text-xs italic text-zinc-400">Nothing beyond the active line.</span>
+          )}
+          <div className="flex flex-wrap content-start gap-1.5">
+            {inactiveTickets.map(t => (
+              <div key={t.id}
+                onPointerDown={e => {
+                  if (canEdit(t) && !t.status.startsWith("done_")) {
+                    startDrag(e, { kind: "ticket", id: t.id, grabX: ticketH / 2, grabY: ticketH / 2 });
+                  } else handleTicketClick(t);
+                }}
+                className={canEdit(t) ? "cursor-grab" : "cursor-pointer"}
+                style={{ touchAction: "none" }}>
+                <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
+                  location={t.location_id ? locMap.get(t.location_id) : undefined}
+                  responsible={t.responsible_id ? memberMap.get(t.responsible_id) : undefined}
+                  width={ticketH} height={ticketH} hid={isHid(t)}
+                  connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id} compact />
+              </div>
+            ))}
+            {inactiveMilestones.map(m => (
+              <div key={m.id}
+                className="relative flex cursor-grab items-center justify-center"
+                style={{ width: ticketH, height: ticketH, touchAction: "none" }}
+                onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
+                onDoubleClick={() => removeMilestone(m.id)}
+                title={`Milestone: ${m.label} (not yet active — drag onto the active zone, double-click to remove)`}>
+                <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-zinc-400 bg-zinc-200 shadow" />
+                <span className="relative px-1 text-center text-[8px] font-bold leading-tight text-zinc-800">{m.label}</span>
+              </div>
+            ))}
+            {inactiveConstraints.map(c => (
+              <div key={c.id}
+                className="relative flex cursor-grab items-center justify-center"
+                style={{ width: ticketH, height: ticketH, touchAction: "none" }}
+                onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
+                onDoubleClick={() => deleteConstraint(c.id)}
+                title={`Constraint: ${c.description} (not yet active — drag onto the active zone, click to edit, double-click to remove)`}>
+                <div className="absolute inset-1 rounded-full border-2 bg-zinc-300 shadow"
+                  style={{ borderColor: PRIORITY_RING[c.priority] }} />
+                <span className="relative px-1.5 text-center text-[8px] font-bold leading-tight text-zinc-800">
+                  ⚠ {c.description}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
