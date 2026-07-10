@@ -70,8 +70,10 @@ export default function TicketCard({
   // the name itself is never clipped/truncated (wraps and can overflow the box
   // instead of being cut off), so it's always visible whether zoomed in or out.
   const descFont = Math.max(10, Math.round(h * 0.2));
-  const tagFont = Math.max(7, Math.min(11, Math.round(h * 0.11)));
-  const tagH = Math.max(12, Math.min(18, Math.round(h * 0.18)));
+  // Kept proportional to h (no high floor) so the strip stays visually thin at
+  // small zoom instead of dominating the card once the rest of it shrinks.
+  const tagH = Math.max(5, Math.min(18, Math.round(h * 0.12)));
+  const tagFont = Math.max(6, Math.min(11, Math.round(tagH * 0.75)));
 
   return (
     <div
