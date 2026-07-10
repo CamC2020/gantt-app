@@ -6,8 +6,12 @@ import type { Profile, PullRole, PullLocation, PullTicket } from "@/lib/supabase
 export type PanelId = "constraints" | "members" | "roles" | "locations" | "snapshots" | "filters" | "overview" | null;
 
 export const ROLE_COLORS = [
-  "#3ec66d", "#f07f4e", "#8f5bd9", "#4a90e2", "#39c2c9",
-  "#e05a9a", "#eab308", "#e14b4b", "#6366f1", "#84cc16",
+  "#3ec66d", "#16a34a", "#065f46", "#84cc16", "#a3e635",
+  "#f07f4e", "#ea580c", "#eab308", "#facc15", "#e14b4b",
+  "#dc2626", "#991b1b", "#e05a9a", "#db2777", "#a21caf",
+  "#8f5bd9", "#7c3aed", "#4c1d95", "#4a90e2", "#2563eb",
+  "#1e3a8a", "#39c2c9", "#0891b2", "#0e7490", "#6366f1",
+  "#334155", "#78716c", "#57534e", "#a8a29e", "#111827",
 ];
 
 const ITEMS: { id: Exclude<PanelId, null>; icon: string; label: string }[] = [
@@ -77,6 +81,12 @@ export function RolesPanel({ roles, onAdd, onRemove }: {
               className={`h-5 w-5 rounded-full border-2 ${color === c ? "border-zinc-800" : "border-transparent"}`}
               style={{ backgroundColor: c }} />
           ))}
+          <label className="relative flex h-5 w-5 cursor-pointer items-center justify-center rounded-full border-2 border-dashed border-zinc-400 text-[10px] text-zinc-500"
+            title="Custom color">
+            +
+            <input type="color" value={color} onChange={e => setColor(e.target.value)}
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0" />
+          </label>
         </div>
         <button onClick={() => { if (name.trim()) { onAdd(name.trim(), color); setName(""); } }}
           className="rounded bg-[#1A3560] px-3 py-1.5 text-xs font-semibold text-white">Add Role</button>
@@ -114,6 +124,12 @@ export function LocationsPanel({ locations, onAdd, onRemove }: {
               className={`h-5 w-5 rounded-full border-2 ${color === c ? "border-zinc-800" : "border-transparent"}`}
               style={{ backgroundColor: c }} />
           ))}
+          <label className="relative flex h-5 w-5 cursor-pointer items-center justify-center rounded-full border-2 border-dashed border-zinc-400 text-[10px] text-zinc-500"
+            title="Custom color">
+            +
+            <input type="color" value={color} onChange={e => setColor(e.target.value)}
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0" />
+          </label>
         </div>
         <button onClick={() => { if (name.trim()) { onAdd(name.trim(), color); setName(""); } }}
           className="rounded bg-[#1A3560] px-3 py-1.5 text-xs font-semibold text-white">Add Location</button>

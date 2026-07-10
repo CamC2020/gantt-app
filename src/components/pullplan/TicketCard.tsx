@@ -14,12 +14,6 @@ export const STATUS_LABEL: Record<PullTicketStatus, string> = {
   done_late: "Done — Late",
 };
 
-const DONE_PIN: Partial<Record<PullTicketStatus, string>> = {
-  done_early: "#16a34a",  // finished early = green pin
-  done_ontime: "#2563eb", // on time = blue pin
-  done_late: "#dc2626",   // late = red pin
-};
-
 const NO_HOLIDAYS = new Set<string>();
 
 // End date = start + (duration-1) WORKING days; weekends skipped unless the
@@ -27,10 +21,6 @@ const NO_HOLIDAYS = new Set<string>();
 export function ticketEnd(t: PullTicket): string | null {
   if (!t.start_date) return null;
   return addWorkingDays(t.start_date, Math.max(0, t.duration - 1), t.work_sat, t.work_sun, NO_HOLIDAYS);
-}
-
-function fmtShort(iso: string) {
-  return parseISODate(iso).toLocaleDateString("en-CA", { month: "short", day: "numeric" });
 }
 
 export default function TicketCard({
@@ -51,9 +41,6 @@ export default function TicketCard({
   onToggleWeekend?: (dow: 0 | 6) => void; // click a weekend day-box to make it a workday
 }) {
   const bodyColor = hid ? "#c8cdd3" : role?.color ?? "#9aa2ab";
-  const stripColor = hid ? "#a8adb4" : location?.color ?? "#6b7280";
-  const isDone = t.status.startsWith("done_");
-  const pin = DONE_PIN[t.status];
   const end = ticketEnd(t);
   const respName = responsible?.full_name?.split(" ")[0] || responsible?.email.split("@")[0] || "";
 
@@ -77,15 +64,15 @@ export default function TicketCard({
   const showBoxes = boxDays.length > 1 && (width ?? 0) >= 40 && !!dayW && boxDays.some(d => d.dow === 0 || d.dow === 6);
   const h = height ?? (compact ? 74 : TICKET_H);
 
-  // Text scales with the card's height so it stays readable at any zoom level.
-  const descFont = Math.max(7, Math.min(14, Math.round(h * 0.16)));
-  const metaFont = Math.max(6, Math.min(11, Math.round(h * 0.115)));
-  const tagFont = Math.max(6, Math.min(10, Math.round(h * 0.1)));
-  const tagH = Math.max(12, Math.min(18, Math.round(h * 0.18)));
+  // Text scales with the card's height so it stays readable at any zoom level —
+  // floor is high enough to stay legible rather than shrinking to nothing, and
+  // the name itself is never clipped/truncated (wraps and can overflow the box
+  // instead of being cut off), so it's always visible whether zoomed in or out.
+  const descFont = Math.max(10, Math.round(h * 0.2));
 
   return (
     <div
-      className="flex h-full select-none flex-col overflow-visible rounded-[2px]"
+      className="flex h-full select-none flex-col overflow-visible rounded-none"
       style={{
         width: width ?? (compact ? 130 : undefined),
         height: h,
@@ -98,7 +85,7 @@ export default function TicketCard({
         opacity: hid ? 0.6 : 1,
         position: "relative",
       }}
-      title={`${t.description}${respName ? ` — ${respName}` : ""} · ${STATUS_LABEL[t.status]}${t.roadblock ? ` · 🚧 ${t.roadblock_note}` : ""}`}
+      title={`${t.description}${respName ? ` — ${respName}` : ""} · ${STATUS_LABEL[t.status]}${location ? ` · ${location.name}` : ""}${t.roadblock ? ` · 🚧 ${t.roadblock_note}` : ""}`}
     >
       {/* Workday boxes strip — positioned with the SAME per-day pixel width as the
           grid (dayW), not stretched evenly, so boxes land exactly over their day
@@ -139,43 +126,11 @@ export default function TicketCard({
           title="Out of sequence — starts before a predecessor finishes">!</span>
       )}
 
-      {/* Location tag strip */}
-      <div className="flex shrink-0 items-center justify-between px-1" style={{ backgroundColor: stripColor, height: tagH }}>
-        <span className="truncate font-bold leading-none text-white" style={{ fontSize: tagFont }}>
-          {hid ? `(hid) ${location?.name ?? ""}` : location?.name ?? ""}
-        </span>
-        <span className="flex items-center gap-0.5 leading-none">
-          {t.roadblock && <span style={{ fontSize: tagFont + 1 }} title={t.roadblock_note || "Roadblock"}>🚧</span>}
-          {(t.status === "promised" || t.status === "in_progress") && (
-            <span className="inline-block h-2 w-2 rounded-full border border-white bg-zinc-900" title={`Promised: ${t.promised_end ?? ""}`} />
-          )}
-          {isDone && pin && (
-            <span className="inline-block h-2 w-2 rounded-full border border-white" style={{ backgroundColor: pin }}
-              title={STATUS_LABEL[t.status]} />
-          )}
-        </span>
-      </div>
-
-      {/* Date line (hidden when very short) */}
-      {t.start_date && !compact && h >= 44 && (
-        <div className="px-1 pt-px font-semibold leading-tight text-black/60" style={{ fontSize: metaFont }}>
-          {fmtShort(t.start_date)}{end && end !== t.start_date ? ` – ${fmtShort(end)}` : ""}
-        </div>
-      )}
-
-      {/* Description */}
-      <div className={`flex-1 overflow-hidden px-1 pt-px text-center font-bold leading-[1.15] text-white ${compact ? "line-clamp-3" : ""}`}
+      {/* Task name only — left-aligned, vertically centered, never clipped */}
+      <div className="flex h-full items-center overflow-visible px-1.5 text-left font-bold leading-[1.15] text-white"
         style={{ textShadow: "0 1px 1px rgba(0,0,0,.25)", fontSize: descFont }}>
         {t.description}
       </div>
-
-      {/* Footer: crew | duration */}
-      {(compact || h >= 30) && (
-      <div className="flex shrink-0 items-center justify-between px-1 pb-0.5 font-bold text-white/90" style={{ fontSize: metaFont }}>
-        <span title="Crew size">{t.crew_size != null ? <>👥 {t.crew_size}</> : respName}</span>
-        <span title="Duration (days)">🕐 {t.duration}</span>
-      </div>
-      )}
     </div>
   );
 }
