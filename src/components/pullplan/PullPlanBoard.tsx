@@ -10,6 +10,7 @@ import type {
 import { addDays, countWorkingDays, diffInDays, formatISODate, parseISODate, todayISO } from "@/lib/date";
 import TicketCard, { ticketEnd } from "./TicketCard";
 import TicketModal from "./TicketModal";
+import { parseMsProjectXml } from "@/lib/msproject";
 import {
   IconRail, PanelShell, RolesPanel, LocationsPanel, MembersPanel,
   ConstraintsPanel, FilterPanel, OverviewPanel, SnapshotsPanel,
@@ -129,6 +130,7 @@ export default function PullPlanBoard({
   const movedRef = useRef(false);
   const boardRef = useRef<HTMLDivElement | null>(null);
   const trayRef = useRef<HTMLDivElement | null>(null);
+  const projectFileRef = useRef<HTMLInputElement | null>(null);
 
   const supa = createClient();
   const today = todayISO();
@@ -798,6 +800,145 @@ export default function PullPlanBoard({
     setImportBusy(false);
   }
 
+  // ── Import MS Project: tasks from an exported XML file onto the board ──────
+  async function importProjectFile(file: File) {
+    if (importBusy) return;
+    if (file.name.toLowerCase().endsWith(".mpp")) {
+      setError("Binary .mpp files can't be read in the browser. In MS Project: File → Save As → pick “XML Format (*.xml)”, then upload that file — it keeps all tasks, dates, predecessors, and resources.");
+      return;
+    }
+    setImportBusy(true);
+    try {
+      const NO_HOL = new Set<string>();
+      const parsed = parseMsProjectXml(await file.text());
+      const items = parsed.tasks;
+      if (!confirm(`Import ${items.length} item${items.length > 1 ? "s" : ""} from “${parsed.projectName}” into the “Undefined” swimlane?\n\nNote: importing the same file again will create duplicates.`)) {
+        setImportBusy(false);
+        return;
+      }
+
+      // Ensure the "Undefined" swimlane exists (at the bottom)
+      let undefLane = lanes.find(l => l.name.toLowerCase() === "undefined");
+      if (!undefLane) {
+        const { data, error: err } = await supa.from("pull_lanes")
+          .insert({ name: "Undefined", sort_order: lanes.length })
+          .select("id, name, sort_order").single();
+        if (err) throw err;
+        undefLane = data as PullLane;
+        setLanes(prev => [...prev, undefLane!]);
+      }
+
+      // Match MS Project resource names to site members (name or email, case-insensitive)
+      const memberByName = new Map<string, string>();
+      for (const m of members) {
+        if (m.full_name) memberByName.set(m.full_name.trim().toLowerCase(), m.id);
+        memberByName.set(m.email.trim().toLowerCase(), m.id);
+      }
+
+      // Greedy row stacking within the Undefined lane (respect existing occupants)
+      const rows: { end: string }[] = [];
+      for (const t of tickets.filter(x => x.lane_id === undefLane!.id && x.start_date)) {
+        const e = ticketEnd(t)!;
+        const r = t.row_index;
+        while (rows.length <= r) rows.push({ end: "0000" });
+        if (rows[r].end < e) rows[r].end = e;
+      }
+      function placeRow(start: string, end: string): number {
+        for (let r = 0; r < rows.length; r++) {
+          if (rows[r].end < start) { rows[r].end = end; return r; }
+        }
+        rows.push({ end });
+        return rows.length - 1;
+      }
+
+      const newTickets: PullTicket[] = [];
+      const newMilestones: PullMilestone[] = [];
+      const uidToTicket = new Map<string, string>();
+      const uidToMilestone = new Map<string, string>();
+
+      const sorted = [...items].sort((a, b) => a.start.localeCompare(b.start));
+      for (const mt of sorted) {
+        const label = `${mt.outlineNumber} ${mt.name}`.trim();
+        if (mt.isMilestone) {
+          const id = crypto.randomUUID();
+          newMilestones.push({
+            id, label, date: mt.start, lane_id: undefLane.id,
+            row_index: placeRow(mt.start, mt.start), source_task_id: null,
+          });
+          uidToMilestone.set(mt.uid, id);
+        } else {
+          const id = crypto.randomUUID();
+          const dur = Math.max(1, countWorkingDays(mt.start, mt.finish, false, false, NO_HOL));
+          const respName = mt.resourceNames[0]?.trim().toLowerCase();
+          newTickets.push({
+            id, lane_id: undefLane.id, owner_id: currentUserId,
+            description: label, start_date: mt.start, duration: dur,
+            crew_size: null, status: "planned",
+            roadblock: false, roadblock_note: "", promised_end: null, sort_order: 0,
+            role_id: null,
+            responsible_id: respName ? (memberByName.get(respName) ?? null) : null,
+            location: "", location_id: null,
+            row_index: placeRow(mt.start, mt.finish),
+            work_sat: false, work_sun: false,
+            notes: "", variance_reason: "", variance_note: "",
+            roadblock_need_by: null, roadblock_priority: "on_track",
+            source_task_id: null,
+          });
+          uidToTicket.set(mt.uid, id);
+        }
+      }
+
+      // Auto-connect predecessors within the imported set
+      const newDeps: PullTicketDep[] = [];
+      const newMsLinks: Omit<PullMilestoneLink, "id">[] = [];
+      for (const mt of sorted) {
+        for (const predUid of mt.predecessorUids) {
+          const predT = uidToTicket.get(predUid);
+          const predM = uidToMilestone.get(predUid);
+          const succT = uidToTicket.get(mt.uid);
+          const succM = uidToMilestone.get(mt.uid);
+          if (predT && succT) {
+            if (!newDeps.some(x => x.ticket_id === succT && x.predecessor_id === predT)) {
+              newDeps.push({ ticket_id: succT, predecessor_id: predT });
+            }
+          } else if (predM && succT) {
+            newMsLinks.push({ ticket_id: succT, milestone_id: predM, ticket_is_pred: false });
+          } else if (predT && succM) {
+            newMsLinks.push({ ticket_id: predT, milestone_id: succM, ticket_is_pred: true });
+          }
+        }
+      }
+
+      if (newMilestones.length) {
+        const { error: err } = await supa.from("pull_milestones").insert(newMilestones);
+        if (err) throw err;
+      }
+      if (newTickets.length) {
+        const { error: err } = await supa.from("pull_tickets").insert(newTickets);
+        if (err) throw err;
+      }
+      if (newDeps.length) {
+        const { error: err } = await supa.from("pull_ticket_deps").insert(newDeps);
+        if (err) throw err;
+      }
+      let insertedMsLinks: PullMilestoneLink[] = [];
+      if (newMsLinks.length) {
+        const { data, error: err } = await supa.from("pull_milestone_links")
+          .insert(newMsLinks).select("id, ticket_id, milestone_id, ticket_is_pred");
+        if (err) throw err;
+        insertedMsLinks = (data ?? []) as PullMilestoneLink[];
+      }
+
+      setMilestones(prev => [...prev, ...newMilestones]);
+      setTickets(prev => [...prev, ...newTickets]);
+      setDeps(prev => [...prev, ...newDeps]);
+      setMsLinks(prev => [...prev, ...insertedMsLinks]);
+    } catch (e) {
+      setError(`MS Project import failed: ${(e as { message?: string }).message ?? String(e)}`);
+    }
+    setImportBusy(false);
+  }
+
   // ── Export to Lookahead: publish the active section as the lookahead ───────
   async function exportToLookahead() {
     if (!lookaheadProjectId || exportBusy) return;
@@ -1210,6 +1351,17 @@ export default function PullPlanBoard({
             title={`Import master schedule tasks from ${activeDate} onward into the “Undefined” swimlane`}>
             {importBusy ? "Importing…" : "⬇ Import Master"}
           </button>
+          <button onClick={() => projectFileRef.current?.click()} disabled={importBusy}
+            className="rounded border border-[#1A3560] px-3 py-1.5 text-sm font-medium text-[#1A3560] hover:bg-blue-50 disabled:opacity-40"
+            title="Import tasks from a Microsoft Project file (File → Save As → XML Format in MS Project)">
+            📁 Import MS Project
+          </button>
+          <input ref={projectFileRef} type="file" accept=".xml,.mpp" className="hidden"
+            onChange={e => {
+              const f = e.target.files?.[0];
+              if (f) importProjectFile(f);
+              e.target.value = ""; // allow re-selecting the same file
+            }} />
           {isAdmin && importSkips.size > 0 && (
             <button onClick={resetImportSkips} disabled={importBusy}
               className="rounded border border-zinc-400 px-3 py-1.5 text-sm font-medium text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
