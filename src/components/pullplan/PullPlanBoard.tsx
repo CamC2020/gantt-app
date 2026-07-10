@@ -23,7 +23,8 @@ const LINE_W = 14;        // active line bar
 const LANE_PAD = 8;
 const HEADER_H = 44;
 const ACTIVE_WEEKS_BEFORE = 1;  // active zone shows 1 week before the active line
-const INACTIVE_SIDEBAR_W = 200; // fixed-width sidebar listing not-yet-active items
+const INACTIVE_SIDEBAR_W = 300; // fixed-width sidebar listing not-yet-active items — always 3 columns
+const INACTIVE_CARD_SIZE = 88;  // fixed card size — independent of active-zone zoom
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 4;
 
@@ -144,15 +145,10 @@ export default function PullPlanBoard({
   const dayW = Math.round(BASE_DAY_W * zoom);
   const ticketH = Math.max(28, Math.round(dayW * 1.1)); // ~square for a 1-day ticket
   const msSize = Math.max(20, Math.round(ticketH * 0.75));   // milestone/constraint circle — never taller than a ticket
-  // Active zone starts at least 2 weeks before the active line, extended back
-  // to the earliest placed ticket so nothing is cut off.
-  const earliestStart = tickets.reduce<string | null>(
-    (min, t) => (t.start_date && (!min || t.start_date < min) ? t.start_date : min), null
-  );
-  const defaultStart = addDays(activeDate, -7 * ACTIVE_WEEKS_BEFORE);
-  const activeStart = getMonday(
-    earliestStart && earliestStart < defaultStart ? earliestStart : defaultStart
-  );
+  // Active zone is a fixed window relative to the active line — it does NOT grow
+  // to fit however far back old ticket data goes. Pan (middle-drag) or zoom to
+  // look further back; the range itself stays anchored to the active line.
+  const activeStart = getMonday(addDays(activeDate, -7 * ACTIVE_WEEKS_BEFORE));
   const activeDays = diffInDays(activeStart, activeDate) + 1;
   const activeW = activeDays * dayW;
 
@@ -1265,11 +1261,21 @@ export default function PullPlanBoard({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Mouse wheel always zooms the active zone (no modifier needed).
-  function onWheel(e: React.WheelEvent) {
-    e.preventDefault();
-    setZoom(z => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * (e.deltaY < 0 ? 1.1 : 0.9))));
-  }
+  // Mouse wheel always zooms the active zone (no modifier needed). Attached as a
+  // native, non-passive listener — React's onWheel prop is passive by default,
+  // so calling preventDefault() there is silently ignored and the whole page
+  // scrolls along with (or instead of) the zoom.
+  const boardScrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = boardScrollRef.current;
+    if (!el) return;
+    function handleWheel(e: WheelEvent) {
+      e.preventDefault();
+      setZoom(z => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * (e.deltaY < 0 ? 1.1 : 0.9))));
+    }
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, []);
 
   // Press-and-hold the middle mouse button to pan the active zone.
   const panRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
@@ -1511,7 +1517,7 @@ export default function PullPlanBoard({
         )}
 
         {/* Scrollable board — wheel zooms, middle-click-drag pans, no visible scrollbars */}
-        <div className="no-scrollbar flex-1 overflow-auto" onWheel={onWheel} onMouseDown={onBoardMouseDown}
+        <div ref={boardScrollRef} className="no-scrollbar flex-1 overflow-auto" onMouseDown={onBoardMouseDown}
           onClick={() => { if (showActivePicker) setShowActivePicker(false); }}>
           <div ref={boardRef} className="relative" style={{ width: totalW, height: HEADER_H + Math.max(lanesH, 200) }}>
 
@@ -1787,21 +1793,20 @@ export default function PullPlanBoard({
           </div>
         </div>
 
-        {/* ── Inactive / Not Yet Active sidebar ── */}
-        <div className="no-scrollbar flex shrink-0 flex-col gap-1 overflow-y-auto border-l border-zinc-300 bg-zinc-100 p-1.5"
-          style={{ width: INACTIVE_SIDEBAR_W }}>
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+        {/* ── Inactive / Not Yet Active sidebar — fixed size, own scroll, never affected by active-zone zoom ── */}
+        <div className="flex shrink-0 flex-col border-l border-zinc-300 bg-zinc-100" style={{ width: INACTIVE_SIDEBAR_W }}>
+          <span className="shrink-0 px-1.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
             Inactive / Not Yet Active
           </span>
           {inactiveTickets.length + inactiveMilestones.length + inactiveConstraints.length === 0 && (
-            <span className="text-xs italic text-zinc-400">Nothing beyond the active line.</span>
+            <span className="px-1.5 pt-1 text-xs italic text-zinc-400">Nothing beyond the active line.</span>
           )}
-          <div className="flex flex-wrap content-start gap-1.5">
+          <div className="grid flex-1 auto-rows-min grid-cols-3 gap-1.5 overflow-y-auto p-1.5">
             {inactiveTickets.map(t => (
               <div key={t.id}
                 onPointerDown={e => {
                   if (canEdit(t) && !t.status.startsWith("done_")) {
-                    startDrag(e, { kind: "ticket", id: t.id, grabX: ticketH / 2, grabY: ticketH / 2 });
+                    startDrag(e, { kind: "ticket", id: t.id, grabX: INACTIVE_CARD_SIZE / 2, grabY: INACTIVE_CARD_SIZE / 2 });
                   } else handleTicketClick(t);
                 }}
                 className={canEdit(t) ? "cursor-grab" : "cursor-pointer"}
@@ -1809,31 +1814,31 @@ export default function PullPlanBoard({
                 <TicketCard t={t} role={t.role_id ? roleMap.get(t.role_id) : undefined}
                   location={t.location_id ? locMap.get(t.location_id) : undefined}
                   responsible={t.responsible_id ? memberMap.get(t.responsible_id) : undefined}
-                  width={ticketH} height={ticketH} hid={isHid(t)}
+                  width={INACTIVE_CARD_SIZE} height={INACTIVE_CARD_SIZE} hid={isHid(t)}
                   connectFrom={connectFrom?.kind === "ticket" && connectFrom.id === t.id} compact />
               </div>
             ))}
             {inactiveMilestones.map(m => (
               <div key={m.id}
                 className="relative flex cursor-grab items-center justify-center"
-                style={{ width: ticketH, height: ticketH, touchAction: "none" }}
+                style={{ width: INACTIVE_CARD_SIZE, height: INACTIVE_CARD_SIZE, touchAction: "none" }}
                 onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
                 onDoubleClick={() => removeMilestone(m.id)}
                 title={`Milestone: ${m.label} (not yet active — drag onto the active zone, double-click to remove)`}>
                 <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-zinc-400 bg-zinc-200 shadow" />
-                <span className="relative px-1 text-center text-[8px] font-bold leading-tight text-zinc-800">{m.label}</span>
+                <span className="relative px-1 text-center text-[9px] font-bold leading-tight text-zinc-800">{m.label}</span>
               </div>
             ))}
             {inactiveConstraints.map(c => (
               <div key={c.id}
                 className="relative flex cursor-grab items-center justify-center"
-                style={{ width: ticketH, height: ticketH, touchAction: "none" }}
+                style={{ width: INACTIVE_CARD_SIZE, height: INACTIVE_CARD_SIZE, touchAction: "none" }}
                 onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
                 onDoubleClick={() => deleteConstraint(c.id)}
                 title={`Constraint: ${c.description} (not yet active — drag onto the active zone, click to edit, double-click to remove)`}>
                 <div className="absolute inset-1 rounded-full border-2 bg-zinc-300 shadow"
                   style={{ borderColor: PRIORITY_RING[c.priority] }} />
-                <span className="relative px-1.5 text-center text-[8px] font-bold leading-tight text-zinc-800">
+                <span className="relative px-1.5 text-center text-[9px] font-bold leading-tight text-zinc-800">
                   ⚠ {c.description}
                 </span>
               </div>
