@@ -22,7 +22,7 @@ const BASE_DAY_W = 36;    // active-zone day column
 const LINE_W = 14;        // active line bar
 const LANE_PAD = 8;
 const HEADER_H = 44;
-const ACTIVE_WEEKS_BEFORE = 1;  // active zone shows 1 week before the active line
+const ACTIVE_ZONE_START = "2026-06-01"; // fixed left edge of the active zone
 const INACTIVE_SIDEBAR_W = 300; // fixed-width sidebar listing not-yet-active items — always 3 columns
 const INACTIVE_CARD_SIZE = 88;  // fixed card size — independent of active-zone zoom
 const MIN_ZOOM = 0.4;
@@ -145,10 +145,10 @@ export default function PullPlanBoard({
   const dayW = Math.round(BASE_DAY_W * zoom);
   const ticketH = Math.max(28, Math.round(dayW * 1.1)); // ~square for a 1-day ticket
   const msSize = Math.max(20, Math.round(ticketH * 0.75));   // milestone/constraint circle — never taller than a ticket
-  // Active zone is a fixed window relative to the active line — it does NOT grow
-  // to fit however far back old ticket data goes. Pan (middle-drag) or zoom to
-  // look further back; the range itself stays anchored to the active line.
-  const activeStart = getMonday(addDays(activeDate, -7 * ACTIVE_WEEKS_BEFORE));
+  // Active zone spans from a fixed start date through the active line — it does
+  // NOT grow to fit however far back old ticket data goes. Pan (middle-drag) or
+  // zoom to look around; the range itself stays anchored between these two dates.
+  const activeStart = getMonday(ACTIVE_ZONE_START);
   const activeDays = diffInDays(activeStart, activeDate) + 1;
   const activeW = activeDays * dayW;
 
@@ -920,14 +920,19 @@ export default function PullPlanBoard({
   }
 
   // ── Export to Lookahead: publish the active section as the lookahead ───────
+  // Lookahead window: the current week through 5 weeks after it (6 weeks total),
+  // anchored on today — independent of wherever the active line happens to be.
+  const lookaheadStart = getMonday(today);
+  const lookaheadEnd = addDays(lookaheadStart, 7 * 6 - 1);
+
   async function exportToLookahead() {
     if (!lookaheadProjectId || exportBusy) return;
-    const expTickets = tickets.filter(t => !t.status.startsWith("done_") && t.start_date && t.start_date <= activeDate);
-    const expMilestones = milestones.filter(m => m.date && m.date <= activeDate);
-    const expConstraints = constraints.filter(c => !c.resolved && c.date && c.date <= activeDate);
+    const expTickets = tickets.filter(t => !t.status.startsWith("done_") && t.start_date && t.start_date >= lookaheadStart && t.start_date <= lookaheadEnd);
+    const expMilestones = milestones.filter(m => m.date && m.date >= lookaheadStart && m.date <= lookaheadEnd);
+    const expConstraints = constraints.filter(c => !c.resolved && c.date && c.date >= lookaheadStart && c.date <= lookaheadEnd);
     const total = expTickets.length + expMilestones.length + expConstraints.length;
-    if (total === 0) { setError("Nothing to export — no unfinished items on or before the active line."); return; }
-    if (!confirm(`Export ${total} item${total > 1 ? "s" : ""} to the Lookahead? This DELETES everything currently in the lookahead and replaces it.`)) return;
+    if (total === 0) { setError(`Nothing to export — no unfinished items between ${lookaheadStart} and ${lookaheadEnd}.`); return; }
+    if (!confirm(`Export ${total} item${total > 1 ? "s" : ""} to the Lookahead (${lookaheadStart} – ${lookaheadEnd})? This DELETES everything currently in the lookahead and replaces it.`)) return;
     setExportBusy(true);
     try {
       // Wipe the current lookahead
@@ -1383,7 +1388,7 @@ export default function PullPlanBoard({
           {isAdmin && (
             <button onClick={exportToLookahead} disabled={exportBusy || !lookaheadProjectId}
               className="rounded border border-[#2A6B35] px-3 py-1.5 text-sm font-medium text-[#2A6B35] hover:bg-green-50 disabled:opacity-40"
-              title="Replace the 6-Week Lookahead with everything on or before the active line">
+              title={`Replace the 6-Week Lookahead with unfinished items from ${lookaheadStart} through ${lookaheadEnd} (current week + next 5)`}>
               {exportBusy ? "Exporting…" : "⬆ Export to Lookahead"}
             </button>
           )}
@@ -1765,6 +1770,17 @@ export default function PullPlanBoard({
                 </div>
               );
             })}
+
+            {/* ── Today marker — distinct from the active line, which may be a different date ── */}
+            {today >= activeStart && today <= activeDate && (
+              <div className="pointer-events-none absolute z-20 flex justify-center"
+                style={{ left: xForDate(today), top: 0, width: dayW, height: HEADER_H + Math.max(lanesH, 200) }}>
+                <div className="absolute inset-y-0 w-0.5 bg-[#dc2626]" />
+                <span className="absolute top-0 whitespace-nowrap rounded-b bg-[#dc2626] px-1 text-[8px] font-bold text-white">
+                  Today
+                </span>
+              </div>
+            )}
 
             {/* ── Active line — click to pick a date, no dragging ── */}
             <div
