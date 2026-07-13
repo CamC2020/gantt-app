@@ -581,7 +581,31 @@ export default function PullPlanBoard({
       const NO_HOL = new Set<string>();
       const parsed = parseMsProjectXml(await file.text());
       const items = parsed.tasks;
-      if (!confirm(`Import ${items.length} item${items.length > 1 ? "s" : ""} from “${parsed.projectName}” into the “Undefined” swimlane?\n\nNote: importing the same file again will create duplicates.`)) {
+
+      // Skip tasks/milestones whose name already exists on the board (by name
+      // alone, ignoring any "1.2.3 " WBS-number prefix) or is repeated within
+      // the file itself — re-importing the same file no longer creates dupes.
+      const stripOutlineNumber = (label: string) => label.replace(/^[\d]+(\.[\d]+)*\s+/, "").trim().toLowerCase();
+      const existingNames = new Set<string>([
+        ...tickets.map(t => stripOutlineNumber(t.description)),
+        ...milestones.map(m => stripOutlineNumber(m.label)),
+      ]);
+      const seenNames = new Set<string>();
+      const items0 = items.filter(mt => {
+        const key = mt.name.trim().toLowerCase();
+        if (existingNames.has(key) || seenNames.has(key)) return false;
+        seenNames.add(key);
+        return true;
+      });
+      const skipped = items.length - items0.length;
+
+      if (items0.length === 0) {
+        setError(`Nothing to import — all ${items.length} item${items.length > 1 ? "s" : ""} already exist on the board (matched by name).`);
+        setImportBusy(false);
+        return;
+      }
+      const skipNote = skipped > 0 ? ` (${skipped} duplicate${skipped > 1 ? "s" : ""} by name skipped)` : "";
+      if (!confirm(`Import ${items0.length} item${items0.length > 1 ? "s" : ""} from “${parsed.projectName}” into the “Undefined” swimlane?${skipNote}`)) {
         setImportBusy(false);
         return;
       }
@@ -625,7 +649,7 @@ export default function PullPlanBoard({
       const uidToTicket = new Map<string, string>();
       const uidToMilestone = new Map<string, string>();
 
-      const sorted = [...items].sort((a, b) => a.start.localeCompare(b.start));
+      const sorted = [...items0].sort((a, b) => a.start.localeCompare(b.start));
       for (const mt of sorted) {
         const label = `${mt.outlineNumber} ${mt.name}`.trim();
         if (mt.isMilestone) {
