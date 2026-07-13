@@ -5,6 +5,8 @@ import MyTasksView from "@/components/tasks/MyTasksView";
 import { diffInDays, todayISO } from "@/lib/date";
 import type { Task, TaskNote, TaskSupport } from "@/lib/supabase/types";
 
+export const dynamic = "force-dynamic";
+
 export default async function MyTasksPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();

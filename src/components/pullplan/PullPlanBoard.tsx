@@ -20,12 +20,12 @@ import {
 // ─── Layout constants (scaled by zoom) ─────────────────────────────────────────
 const BASE_DAY_W = 36;    // active-zone day column
 const LINE_W = 14;        // active line bar
-const LANE_PAD = 8;
+const BASE_LANE_PAD = 8;  // scaled by zoom below (see LANE_PAD in the component)
 const HEADER_H = 44;
 const ACTIVE_ZONE_START = "2026-06-01"; // fixed left edge of the active zone
 const INACTIVE_SIDEBAR_W = 300; // fixed-width sidebar listing not-yet-active items — always 3 columns
 const INACTIVE_CARD_SIZE = 88;  // fixed card size — independent of active-zone zoom
-const MIN_ZOOM = 0.4;
+const MIN_ZOOM = 0.15;   // low enough to fit an entire board's worth of rows on screen at once
 const MAX_ZOOM = 4;
 
 const LANE_TINTS: [string, string][] = [
@@ -137,8 +137,11 @@ export default function PullPlanBoard({
   // square cards — no date grid, no arrows. The moment the active line reaches an
   // item's start date, it flips into the date-positioned active zone automatically.
   const dayW = Math.round(BASE_DAY_W * zoom);
-  const ticketH = Math.max(28, Math.round(dayW * 1.1)); // ~square for a 1-day ticket
-  const msSize = Math.max(20, Math.round(ticketH * 0.75));   // milestone/constraint circle — never taller than a ticket
+  const ticketH = Math.max(10, Math.round(dayW * 1.1)); // ~square for a 1-day ticket
+  const msSize = Math.max(8, Math.round(ticketH * 0.75));   // milestone/constraint circle — never taller than a ticket
+  // Row padding shrinks with zoom too — otherwise it dominates row height at low
+  // zoom and defeats the point of zooming out to fit everything on screen.
+  const LANE_PAD = Math.max(2, Math.round(BASE_LANE_PAD * zoom));
   // Active zone spans from a fixed start date through the active line — it does
   // NOT grow to fit however far back old ticket data goes. Pan (middle-drag) or
   // zoom to look around; the range itself stays anchored between these two dates.
@@ -732,59 +735,70 @@ export default function PullPlanBoard({
         if (dErr) throw dErr;
       }
 
+      // Row order mirrors the Pull Plan board: swimlane order first (same order
+      // the lanes appear on the board), then row within the lane, then whichever
+      // item started first when two items share a row.
+      const laneOrder = new Map(lanes.map((l, i) => [l.id, i]));
+      const laneIdxOf = (laneId: string | null) => (laneId && laneOrder.has(laneId) ? laneOrder.get(laneId)! : Infinity);
+
+      type Candidate =
+        | { kind: "ticket"; item: PullTicket }
+        | { kind: "milestone"; item: PullMilestone }
+        | { kind: "constraint"; item: PullConstraint };
+      const dateOf = (c: Candidate) => (c.kind === "ticket" ? c.item.start_date! : c.item.date!);
+
+      const candidates: Candidate[] = [
+        ...expTickets.map(item => ({ kind: "ticket" as const, item })),
+        ...expMilestones.map(item => ({ kind: "milestone" as const, item })),
+        ...expConstraints.map(item => ({ kind: "constraint" as const, item })),
+      ];
+      candidates.sort((a, b) =>
+        laneIdxOf(a.item.lane_id) - laneIdxOf(b.item.lane_id) ||
+        a.item.row_index - b.item.row_index ||
+        dateOf(a).localeCompare(dateOf(b))
+      );
+
       // Build lookahead tasks
       const pullToTask = new Map<string, string>(); // pull item id -> new task id
-      const ticketSortOrder = new Map<string, number>(); // pull ticket id -> assigned sort_order
       const newTasks: Record<string, unknown>[] = [];
-      let idx = 0;
-      const sortedT = [...expTickets].sort((a, b) => a.start_date!.localeCompare(b.start_date!));
-      for (const t of sortedT) {
+      candidates.forEach((c, sortOrder) => {
         const id = crypto.randomUUID();
-        pullToTask.set(t.id, id);
-        const so = idx++;
-        ticketSortOrder.set(t.id, so);
-        newTasks.push({
-          id, project_id: lookaheadProjectId, title: t.description,
-          start_date: t.start_date, end_date: ticketEnd(t),
-          champion_id: t.responsible_id, status: t.status === "in_progress" ? "in_progress" : "not_started",
-          parent_id: null, sort_order: so,
-          work_sat: t.work_sat, work_sun: t.work_sun,
-          is_milestone: false, is_constraint: false,
-          crew_size: t.crew_size, role_id: t.role_id,
-        });
-      }
-      for (const m of expMilestones) {
-        const id = crypto.randomUUID();
-        pullToTask.set(m.id, id);
-        newTasks.push({
-          id, project_id: lookaheadProjectId, title: m.label,
-          start_date: m.date, end_date: m.date,
-          champion_id: null, status: "not_started",
-          parent_id: null, sort_order: idx++,
-          work_sat: false, work_sun: false,
-          is_milestone: true, is_constraint: false,
-          crew_size: null, role_id: null,
-        });
-      }
-      // Constraints render one row above the earliest ticket they block; unlinked
-      // constraints fall after everything else.
-      let unlinkedIdx = idx;
-      for (const c of expConstraints) {
-        const id = crypto.randomUUID();
-        pullToTask.set(c.id, id);
-        const linkedTicketIds = cLinks.filter(l => l.constraint_id === c.id).map(l => l.ticket_id);
-        const linkedSortOrders = linkedTicketIds.map(tid => ticketSortOrder.get(tid)).filter((n): n is number => n !== undefined);
-        const so = linkedSortOrders.length > 0 ? Math.min(...linkedSortOrders) - 0.5 : unlinkedIdx++;
-        newTasks.push({
-          id, project_id: lookaheadProjectId, title: c.description,
-          start_date: c.date, end_date: c.date,
-          champion_id: c.responsible_id, status: "not_started",
-          parent_id: null, sort_order: so,
-          work_sat: false, work_sun: false,
-          is_milestone: false, is_constraint: true,
-          crew_size: null, role_id: null,
-        });
-      }
+        pullToTask.set(c.item.id, id);
+        if (c.kind === "ticket") {
+          const t = c.item;
+          newTasks.push({
+            id, project_id: lookaheadProjectId, title: t.description,
+            start_date: t.start_date, end_date: ticketEnd(t),
+            champion_id: t.responsible_id, status: t.status === "in_progress" ? "in_progress" : "not_started",
+            parent_id: null, sort_order: sortOrder,
+            work_sat: t.work_sat, work_sun: t.work_sun,
+            is_milestone: false, is_constraint: false,
+            crew_size: t.crew_size, role_id: t.role_id,
+          });
+        } else if (c.kind === "milestone") {
+          const m = c.item;
+          newTasks.push({
+            id, project_id: lookaheadProjectId, title: m.label,
+            start_date: m.date, end_date: m.date,
+            champion_id: null, status: "not_started",
+            parent_id: null, sort_order: sortOrder,
+            work_sat: false, work_sun: false,
+            is_milestone: true, is_constraint: false,
+            crew_size: null, role_id: null,
+          });
+        } else {
+          const cn = c.item;
+          newTasks.push({
+            id, project_id: lookaheadProjectId, title: cn.description,
+            start_date: cn.date, end_date: cn.date,
+            champion_id: cn.responsible_id, status: "not_started",
+            parent_id: null, sort_order: sortOrder,
+            work_sat: false, work_sun: false,
+            is_milestone: false, is_constraint: true,
+            crew_size: null, role_id: null,
+          });
+        }
+      });
       const { error: iErr } = await supa.from("tasks").insert(newTasks);
       if (iErr) throw iErr;
 
