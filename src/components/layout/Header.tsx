@@ -47,9 +47,6 @@ export default async function Header() {
         <nav className="flex items-center gap-3 text-sm shrink-0">
           {user ? (
             <>
-              <Link href="/schedule" className="text-blue-100 hover:text-white transition-colors">
-                Master Schedule
-              </Link>
               <Link href="/lookahead" className="text-blue-100 hover:text-white transition-colors">
                 Lookahead
               </Link>

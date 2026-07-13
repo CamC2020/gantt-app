@@ -4,13 +4,6 @@ import type { Profile } from "@/lib/supabase/types";
 
 const NAV_CARDS = [
   {
-    href: "/schedule",
-    title: "Master Schedule",
-    description: "View and edit the full project Gantt chart.",
-    icon: "📅",
-    color: "border-[#1A3560]",
-  },
-  {
     href: "/lookahead",
     title: "6-Week Lookahead",
     description: "Tasks coming up in the next six weeks.",
@@ -27,7 +20,7 @@ const NAV_CARDS = [
   {
     href: "/my-tasks",
     title: "My Tasks",
-    description: "Your Pull Plan tickets — promise, start, and complete work.",
+    description: "Your tasks from the Lookahead schedule — start and complete work.",
     icon: "✅",
     color: "border-green-600",
   },

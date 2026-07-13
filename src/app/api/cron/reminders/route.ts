@@ -61,7 +61,7 @@ function emailHtml(opts: {
         View My Tasks →
       </a>
       <p style="margin:24px 0 0;font-size:12px;color:#9ca3af">
-        You're receiving this because you are assigned as champion, assignee, or support on this task in the Anmore Operations Yard Master Schedule.
+        You're receiving this because you are assigned as champion, assignee, or support on this task in the Anmore Operations Yard schedule.
       </p>
     </div>
     <div style="padding:16px 32px;border-top:1px solid #f1f5f9;background:#f8fafc">

@@ -1,62 +1,107 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import PullMyTasks from "@/components/tasks/PullMyTasks";
-import type { PullTicket, PullLane, PullRole, PullLocation } from "@/lib/supabase/types";
+import { getOrCreateLookaheadProject } from "@/lib/actions/master";
+import MyTasksView from "@/components/tasks/MyTasksView";
+import { diffInDays, todayISO } from "@/lib/date";
+import type { Task, TaskNote, TaskSupport } from "@/lib/supabase/types";
 
 export default async function MyTasksPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const TICKET_COLS = "id, lane_id, owner_id, description, start_date, duration, crew_size, status, roadblock, roadblock_note, promised_end, sort_order, role_id, responsible_id, location, location_id, row_index, work_sat, work_sun, notes, variance_reason, variance_note, roadblock_need_by, roadblock_priority, source_task_id";
+  const lookahead = await getOrCreateLookaheadProject();
+  if (!lookahead) {
+    return (
+      <div className="mx-auto w-full max-w-3xl px-6 py-8">
+        <p className="text-red-600">Could not load the Lookahead schedule.</p>
+      </div>
+    );
+  }
 
-  const [{ data: tickets }, { data: lanes }, { data: roles }, { data: locations }, { data: mySupport }] =
-    await Promise.all([
-      supabase.from("pull_tickets")
-        .select(TICKET_COLS)
-        .or(`responsible_id.eq.${user.id},owner_id.eq.${user.id}`)
-        .returns<PullTicket[]>(),
-      supabase.from("pull_lanes").select("id, name, sort_order").returns<PullLane[]>(),
-      supabase.from("pull_roles").select("id, name, color").returns<PullRole[]>(),
-      supabase.from("pull_locations").select("id, name, color, sort_order").returns<PullLocation[]>(),
-      supabase.from("pull_ticket_support").select("ticket_id, user_id").eq("user_id", user.id),
-    ]);
+  const TASK_COLS = "id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone, subcontractor, crew_size, role_id, is_constraint";
 
-  // Tickets where I'm support (excluding ones I already own / am responsible for)
-  const ownIds = new Set((tickets ?? []).map(t => t.id));
-  const supportIds = (mySupport ?? []).map(s => s.ticket_id).filter(id => !ownIds.has(id));
-  const { data: supportTickets } = supportIds.length > 0
-    ? await supabase.from("pull_tickets").select(TICKET_COLS).in("id", supportIds).returns<PullTicket[]>()
-    : { data: [] as PullTicket[] };
+  const [{ data: mine }, { data: mySupport }] = await Promise.all([
+    supabase.from("tasks")
+      .select(TASK_COLS)
+      .eq("project_id", lookahead.id)
+      .or(`assignee_id.eq.${user.id},champion_id.eq.${user.id}`)
+      .returns<Task[]>(),
+    supabase.from("task_support")
+      .select("task_id, user_id")
+      .eq("user_id", user.id)
+      .returns<TaskSupport[]>(),
+  ]);
+
+  const ownIds = new Set((mine ?? []).map(t => t.id));
+  const supportTaskIds = (mySupport ?? []).map(s => s.task_id).filter(id => !ownIds.has(id));
+  const { data: supportTasks } = supportTaskIds.length > 0
+    ? await supabase.from("tasks").select(TASK_COLS).in("id", supportTaskIds).returns<Task[]>()
+    : { data: [] as Task[] };
+
+  const allTasks = [...(mine ?? []), ...(supportTasks ?? [])];
+
+  if (allTasks.length === 0) {
+    return (
+      <div className="mx-auto w-full max-w-3xl px-6 py-8">
+        <div className="mb-6 flex flex-col gap-1">
+          <h1 className="text-2xl font-bold text-[#1A3560]">My Tasks</h1>
+          <p className="text-sm text-slate-500">
+            Your tasks from the 6-Week Lookahead — start and complete work right from here.
+          </p>
+        </div>
+        <div className="rounded-lg border border-dashed border-zinc-300 bg-white px-6 py-12 text-center">
+          <p className="text-zinc-500">No tasks are currently assigned to you.</p>
+          <p className="mt-1 text-sm text-zinc-400">
+            Tasks appear here once they're exported to the{" "}
+            <a href="/lookahead" className="underline hover:text-zinc-600">Lookahead</a>{" "}
+            and you're set as champion, assignee, or support.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const taskIds = allTasks.map(t => t.id);
+  const parentIds = [...new Set(allTasks.map(t => t.parent_id).filter((id): id is string => !!id))];
+
+  const [{ data: notes }, { data: parents }] = await Promise.all([
+    supabase.from("task_notes")
+      .select("id, task_id, user_id, content, updated_at")
+      .in("task_id", taskIds)
+      .eq("user_id", user.id)
+      .returns<TaskNote[]>(),
+    parentIds.length > 0
+      ? supabase.from("tasks").select("id, title").in("id", parentIds)
+      : Promise.resolve({ data: [] as { id: string; title: string }[] }),
+  ]);
+
+  const noteMap = new Map((notes ?? []).map(n => [n.task_id, n.content]));
+  const parentMap = new Map((parents ?? []).map(p => [p.id, p.title]));
+  const today = todayISO();
+
+  const enrich = (t: Task, role: "champion" | "assignee" | "support") => ({
+    ...t,
+    note: noteMap.get(t.id) ?? "",
+    role,
+    parentTitle: t.parent_id ? parentMap.get(t.parent_id) ?? null : null,
+    daysUntilEnd: diffInDays(today, t.end_date),
+  });
+
+  const enriched = [
+    ...(mine ?? []).map(t => enrich(t, t.champion_id === user.id ? "champion" : "assignee")),
+    ...(supportTasks ?? []).map(t => enrich(t, "support")),
+  ];
 
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-8">
       <div className="mb-6 flex flex-col gap-1">
         <h1 className="text-2xl font-bold text-[#1A3560]">My Tasks</h1>
         <p className="text-sm text-slate-500">
-          Your tickets from the Pull Plan — everything you own or are responsible for.
-          Promise, start, and complete work right from here.
+          Your tasks from the 6-Week Lookahead — start and complete work right from here.
         </p>
       </div>
-
-      {(tickets ?? []).length === 0 && (supportTickets ?? []).length === 0 ? (
-        <div className="rounded-lg border border-dashed border-zinc-300 bg-white px-6 py-12 text-center">
-          <p className="text-zinc-500">No tickets are currently assigned to you.</p>
-          <p className="mt-1 text-sm text-zinc-400">
-            Tickets appear here when you create them or are set as Responsible on the{" "}
-            <a href="/pullplan" className="underline hover:text-zinc-600">Pull Plan</a>.
-          </p>
-        </div>
-      ) : (
-        <PullMyTasks
-          initialTickets={tickets ?? []}
-          supportTickets={supportTickets ?? []}
-          lanes={lanes ?? []}
-          roles={roles ?? []}
-          locations={locations ?? []}
-          currentUserId={user.id}
-        />
-      )}
+      <MyTasksView tasks={enriched} userId={user.id} />
     </div>
   );
 }

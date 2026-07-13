@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { getOrCreateMasterProject, getOrCreateLookaheadProject } from "@/lib/actions/master";
+import { getOrCreateLookaheadProject } from "@/lib/actions/master";
 import type {
   Profile, PullLane, PullTicket, PullMilestone, PullRole, PullTicketDep, PullLocation, PullMilestoneLink, PullSnapshot,
-  PullConstraint, PullConstraintLink, PullTicketSupport, Task, TaskDependency,
+  PullConstraint, PullConstraintLink, PullTicketSupport,
 } from "@/lib/supabase/types";
 import PullPlanBoard from "@/components/pullplan/PullPlanBoard";
 
@@ -14,17 +14,13 @@ export default async function PullPlanPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const [master, lookahead] = await Promise.all([
-    getOrCreateMasterProject(),
-    getOrCreateLookaheadProject(),
-  ]);
+  const lookahead = await getOrCreateLookaheadProject();
 
   const [
     { data: lanes }, { data: tickets }, { data: milestones },
     { data: profiles }, { data: roles }, { data: deps },
     { data: locations }, { data: settings }, { data: msLinks }, { data: snapshots },
     { data: constraints }, { data: cLinks }, { data: support },
-    { data: masterTasks }, { data: importSkips },
   ] = await Promise.all([
     supabase.from("pull_lanes")
       .select("id, name, sort_order")
@@ -73,23 +69,7 @@ export default async function PullPlanPage() {
     supabase.from("pull_ticket_support")
       .select("ticket_id, user_id")
       .returns<PullTicketSupport[]>(),
-    master
-      ? supabase.from("tasks")
-          .select("id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone, subcontractor, crew_size, role_id, is_constraint")
-          .eq("project_id", master.id)
-          .order("sort_order", { ascending: true })
-          .returns<Task[]>()
-      : Promise.resolve({ data: [] as Task[] }),
-    supabase.from("pull_import_skips").select("task_id"),
   ]);
-
-  const masterTaskIds = (masterTasks ?? []).map(t => t.id);
-  const { data: masterDeps } = masterTaskIds.length > 0
-    ? await supabase.from("task_dependencies")
-        .select("task_id, predecessor_id, lag_days")
-        .in("task_id", masterTaskIds)
-        .returns<TaskDependency[]>()
-    : { data: [] as TaskDependency[] };
 
   const myProfile = (profiles ?? []).find(p => p.id === user.id);
 
@@ -111,10 +91,6 @@ export default async function PullPlanPage() {
         initialCLinks={cLinks ?? []}
         initialSupport={support ?? []}
         initialActiveDate={settings?.active_date ?? null}
-        masterTasks={masterTasks ?? []}
-        masterDeps={masterDeps ?? []}
-        masterProjectId={master?.id ?? null}
-        initialImportSkips={(importSkips ?? []).map(r => r.task_id as string)}
         lookaheadProjectId={lookahead?.id ?? null}
         members={profiles ?? []}
         currentUserId={user.id}

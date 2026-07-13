@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/client";
 import type {
   Profile, PullLane, PullTicket, PullMilestone, PullTicketStatus,
   PullRole, PullTicketDep, PullLocation, PullMilestoneLink, PullSnapshot, PullSnapshotData,
-  PullConstraint, PullConstraintLink, PullTicketSupport, Task, TaskDependency,
+  PullConstraint, PullConstraintLink, PullTicketSupport,
 } from "@/lib/supabase/types";
 import { addDays, countWorkingDays, diffInDays, formatISODate, parseISODate, todayISO } from "@/lib/date";
 import TicketCard, { ticketEnd } from "./TicketCard";
@@ -64,8 +64,7 @@ const PRIORITY_RING: Record<PullConstraint["priority"], string> = {
 export default function PullPlanBoard({
   initialLanes, initialTickets, initialMilestones, initialRoles, initialDeps,
   initialMsLinks = [], initialLocations, initialSnapshots = [], initialConstraints = [], initialCLinks = [],
-  initialSupport = [], masterTasks = [], masterDeps = [], masterProjectId = null, lookaheadProjectId = null,
-  initialImportSkips = [],
+  initialSupport = [], lookaheadProjectId = null,
   initialActiveDate, members, currentUserId, isAdmin,
 }: {
   initialLanes: PullLane[];
@@ -79,11 +78,7 @@ export default function PullPlanBoard({
   initialConstraints?: PullConstraint[];
   initialCLinks?: PullConstraintLink[];
   initialSupport?: PullTicketSupport[];
-  masterTasks?: Task[];
-  masterDeps?: TaskDependency[];
-  masterProjectId?: string | null;
   lookaheadProjectId?: string | null;
-  initialImportSkips?: string[];
   initialActiveDate: string | null;
   members: Profile[];
   currentUserId: string;
@@ -101,7 +96,6 @@ export default function PullPlanBoard({
   const [constraints, setConstraints] = useState<PullConstraint[]>(initialConstraints);
   const [cLinks, setCLinks] = useState<PullConstraintLink[]>(initialCLinks);
   const [support, setSupport] = useState<PullTicketSupport[]>(initialSupport);
-  const [importSkips, setImportSkips] = useState<Set<string>>(() => new Set(initialImportSkips));
   const [importBusy, setImportBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [editingConstraint, setEditingConstraint] = useState<string | null>(null);
@@ -304,7 +298,6 @@ export default function PullPlanBoard({
   }
 
   async function deleteTicket(id: string) {
-    const t = ticketMap.get(id);
     // Delete against the DB first — if RLS silently blocks it (0 rows affected is
     // NOT an error from Supabase), a stale row would otherwise linger and reappear
     // on the next reload/import while the UI thinks it's gone.
@@ -317,10 +310,6 @@ export default function PullPlanBoard({
     setTickets(prev => prev.filter(t => t.id !== id));
     setDeps(prev => prev.filter(d => d.ticket_id !== id && d.predecessor_id !== id));
     setEditing(null);
-    if (t?.source_task_id) {
-      setImportSkips(prev => new Set(prev).add(t.source_task_id!));
-      await supa.from("pull_import_skips").insert({ task_id: t.source_task_id }); // ignore duplicate-key errors
-    }
   }
 
   async function addDep(ticketId: string, predId: string) {
@@ -457,7 +446,6 @@ export default function PullPlanBoard({
 
   async function removeMilestone(id: string) {
     if (!confirm("Remove this milestone?")) return;
-    const m = milestones.find(x => x.id === id);
     const { error: err, data: deleted } = await supa.from("pull_milestones").delete().eq("id", id).select("id");
     if (err) { setError(err.message); return; }
     if (!deleted || deleted.length === 0) {
@@ -465,10 +453,6 @@ export default function PullPlanBoard({
       return;
     }
     setMilestones(prev => prev.filter(m => m.id !== id));
-    if (m?.source_task_id) {
-      setImportSkips(prev => new Set(prev).add(m.source_task_id!));
-      await supa.from("pull_import_skips").insert({ task_id: m.source_task_id });
-    }
   }
 
   async function addRole(name: string, color: string) {
@@ -580,204 +564,6 @@ export default function PullPlanBoard({
         .insert(userIds.map(u => ({ ticket_id: ticketId, user_id: u })));
       if (err) setError(err.message);
     }
-  }
-
-  // Clears the "don't resurrect deleted imports" blacklist, so any master task
-  // that was previously deleted from the Pull Plan can be imported again.
-  async function resetImportSkips() {
-    if (importBusy) return;
-    if (!confirm("Reset import history? Master tasks you previously removed from the Pull Plan will become importable again.")) return;
-    const { error: err } = await supa.from("pull_import_skips").delete().neq("task_id", "00000000-0000-0000-0000-000000000000");
-    if (err) { setError(err.message); return; }
-    setImportSkips(new Set());
-  }
-
-  // ── Import Master: bring non-active master tasks onto the board ────────────
-  async function importMaster() {
-    if (importBusy) return;
-    setImportBusy(true);
-    try {
-      const NO_HOL = new Set<string>();
-
-      // Re-fetch everything fresh from the DB rather than trusting client/server
-      // props — the master task list is a server-rendered prop that can go stale
-      // across client-side navigation (Next.js router cache), which was causing
-      // "nothing to import" even when new master tasks existed.
-      const TASK_COLS = "id, project_id, title, start_date, end_date, assignee_id, champion_id, status, parent_id, sort_order, created_at, work_sat, work_sun, is_milestone, subcontractor, crew_size, role_id, is_constraint";
-      const [{ data: freshSkips }, { data: freshTickets }, { data: freshMs }, { data: freshMasterTasks }] = await Promise.all([
-        supa.from("pull_import_skips").select("task_id"),
-        supa.from("pull_tickets").select("source_task_id"),
-        supa.from("pull_milestones").select("source_task_id"),
-        masterProjectId
-          ? supa.from("tasks").select(TASK_COLS).eq("project_id", masterProjectId).order("sort_order", { ascending: true })
-          : Promise.resolve({ data: masterTasks }),
-      ]);
-      const freshMaster = (freshMasterTasks ?? masterTasks) as Task[];
-      const masterTaskIds = freshMaster.map(t => t.id);
-      const { data: freshMasterDeps } = masterTaskIds.length > 0
-        ? await supa.from("task_dependencies").select("task_id, predecessor_id, lag_days").in("task_id", masterTaskIds)
-        : { data: masterDeps };
-      const freshDeps = (freshMasterDeps ?? masterDeps) as TaskDependency[];
-
-      // WBS numbering over the whole master schedule (matches the Gantt's "#")
-      const childrenOf = new Map<string | null, Task[]>();
-      for (const t of freshMaster) {
-        const k = t.parent_id ?? null;
-        if (!childrenOf.has(k)) childrenOf.set(k, []);
-        childrenOf.get(k)!.push(t);
-      }
-      for (const g of childrenOf.values()) g.sort((a, b) => a.sort_order - b.sort_order);
-      const wbs = new Map<string, string>();
-      (function walk(pid: string | null, prefix: string) {
-        (childrenOf.get(pid) ?? []).forEach((t, i) => {
-          const label = prefix ? `${prefix}.${i + 1}` : `${i + 1}`;
-          wbs.set(t.id, label);
-          walk(t.id, label);
-        });
-      })(null, "");
-
-      const freshSkipSet = new Set((freshSkips ?? []).map(r => r.task_id as string));
-      setImportSkips(freshSkipSet);
-
-      const alreadyImported = new Set<string>([
-        ...(freshTickets ?? []).map(t => t.source_task_id).filter((x): x is string => !!x),
-        ...(freshMs ?? []).map(m => m.source_task_id).filter((x): x is string => !!x),
-      ]);
-      const isLeaf = (t: Task) => (childrenOf.get(t.id) ?? []).length === 0;
-      const candidates = freshMaster.filter(t =>
-        isLeaf(t) && !t.is_constraint && t.start_date >= activeDate
-        && !alreadyImported.has(t.id) && !freshSkipSet.has(t.id)
-      );
-      if (candidates.length === 0) {
-        setError("Nothing new to import — all master tasks past the active line are already on the board.");
-        setImportBusy(false);
-        return;
-      }
-      if (!confirm(`Import ${candidates.length} master schedule item${candidates.length > 1 ? "s" : ""} from ${activeDate} onward into the “Undefined” swimlane?`)) {
-        setImportBusy(false);
-        return;
-      }
-
-      // Ensure the "Undefined" swimlane exists (at the bottom)
-      let undefLane = lanes.find(l => l.name.toLowerCase() === "undefined");
-      if (!undefLane) {
-        const { data, error: err } = await supa.from("pull_lanes")
-          .insert({ name: "Undefined", sort_order: lanes.length })
-          .select("id, name, sort_order").single();
-        if (err) throw err;
-        undefLane = data as PullLane;
-        setLanes(prev => [...prev, undefLane!]);
-      }
-
-      const roleIds = new Set(roles.map(r => r.id));
-      const memberIds = new Set(members.map(m => m.id));
-
-      // Greedy row stacking within the Undefined lane (respect existing occupants)
-      const rows: { end: string }[] = [];
-      for (const t of tickets.filter(x => x.lane_id === undefLane!.id && x.start_date)) {
-        const e = ticketEnd(t)!;
-        const r = t.row_index;
-        while (rows.length <= r) rows.push({ end: "0000" });
-        if (rows[r].end < e) rows[r].end = e;
-      }
-      function placeRow(start: string, end: string): number {
-        for (let r = 0; r < rows.length; r++) {
-          if (rows[r].end < start) { rows[r].end = end; return r; }
-        }
-        rows.push({ end });
-        return rows.length - 1;
-      }
-
-      const newTickets: PullTicket[] = [];
-      const newMilestones: PullMilestone[] = [];
-      const taskToTicket = new Map<string, string>();
-      const taskToMilestone = new Map<string, string>();
-      for (const t of tickets) if (t.source_task_id) taskToTicket.set(t.source_task_id, t.id);
-      for (const m of milestones) if (m.source_task_id) taskToMilestone.set(m.source_task_id, m.id);
-
-      const sorted = [...candidates].sort((a, b) => a.start_date.localeCompare(b.start_date));
-      for (const mt of sorted) {
-        const label = `${wbs.get(mt.id) ?? ""} ${mt.title}`.trim();
-        if (mt.is_milestone) {
-          const id = crypto.randomUUID();
-          newMilestones.push({
-            id, label, date: mt.start_date, lane_id: undefLane.id,
-            row_index: placeRow(mt.start_date, mt.start_date), source_task_id: mt.id,
-          });
-          taskToMilestone.set(mt.id, id);
-        } else {
-          const id = crypto.randomUUID();
-          const dur = Math.max(1, countWorkingDays(mt.start_date, mt.end_date, mt.work_sat ?? false, mt.work_sun ?? false, NO_HOL));
-          newTickets.push({
-            id, lane_id: undefLane.id, owner_id: currentUserId,
-            description: label, start_date: mt.start_date, duration: dur,
-            crew_size: mt.crew_size ?? null, status: "planned",
-            roadblock: false, roadblock_note: "", promised_end: null, sort_order: 0,
-            role_id: mt.role_id && roleIds.has(mt.role_id) ? mt.role_id : null,
-            responsible_id: mt.champion_id && memberIds.has(mt.champion_id) ? mt.champion_id : null,
-            location: "", location_id: null,
-            row_index: placeRow(mt.start_date, mt.end_date),
-            work_sat: mt.work_sat ?? false, work_sun: mt.work_sun ?? false,
-            notes: "", variance_reason: "", variance_note: "",
-            roadblock_need_by: null, roadblock_priority: "on_track",
-            source_task_id: mt.id,
-          });
-          taskToTicket.set(mt.id, id);
-        }
-      }
-
-      // Auto-connect predecessors among imported (and previously imported) items
-      const newDeps: PullTicketDep[] = [];
-      const newMsLinks: Omit<PullMilestoneLink, "id">[] = [];
-      for (const d of freshDeps) {
-        const predT = taskToTicket.get(d.predecessor_id);
-        const succT = taskToTicket.get(d.task_id);
-        const predM = taskToMilestone.get(d.predecessor_id);
-        const succM = taskToMilestone.get(d.task_id);
-        if (predT && succT) {
-          if (!deps.some(x => x.ticket_id === succT && x.predecessor_id === predT) &&
-              !newDeps.some(x => x.ticket_id === succT && x.predecessor_id === predT)) {
-            newDeps.push({ ticket_id: succT, predecessor_id: predT });
-          }
-        } else if (predM && succT) {
-          if (!msLinks.some(x => x.ticket_id === succT && x.milestone_id === predM)) {
-            newMsLinks.push({ ticket_id: succT, milestone_id: predM, ticket_is_pred: false });
-          }
-        } else if (predT && succM) {
-          if (!msLinks.some(x => x.ticket_id === predT && x.milestone_id === succM)) {
-            newMsLinks.push({ ticket_id: predT, milestone_id: succM, ticket_is_pred: true });
-          }
-        }
-      }
-
-      if (newMilestones.length) {
-        const { error: err } = await supa.from("pull_milestones").insert(newMilestones);
-        if (err) throw err;
-      }
-      if (newTickets.length) {
-        const { error: err } = await supa.from("pull_tickets").insert(newTickets);
-        if (err) throw err;
-      }
-      if (newDeps.length) {
-        const { error: err } = await supa.from("pull_ticket_deps").insert(newDeps);
-        if (err) throw err;
-      }
-      let insertedMsLinks: PullMilestoneLink[] = [];
-      if (newMsLinks.length) {
-        const { data, error: err } = await supa.from("pull_milestone_links")
-          .insert(newMsLinks).select("id, ticket_id, milestone_id, ticket_is_pred");
-        if (err) throw err;
-        insertedMsLinks = (data ?? []) as PullMilestoneLink[];
-      }
-
-      setMilestones(prev => [...prev, ...newMilestones]);
-      setTickets(prev => [...prev, ...newTickets]);
-      setDeps(prev => [...prev, ...newDeps]);
-      setMsLinks(prev => [...prev, ...insertedMsLinks]);
-    } catch (e) {
-      setError(`Import failed: ${(e as { message?: string }).message ?? String(e)}`);
-    }
-    setImportBusy(false);
   }
 
   // ── Import MS Project: tasks from an exported XML file onto the board ──────
@@ -1362,11 +1148,6 @@ export default function PullPlanBoard({
         )}
         {filtersActive && <span className="text-xs text-amber-600">🔍 Filters active</span>}
         <span className="ml-auto flex items-center gap-2">
-          <button onClick={importMaster} disabled={importBusy || masterTasks.length === 0}
-            className="rounded border border-[#1A3560] px-3 py-1.5 text-sm font-medium text-[#1A3560] hover:bg-blue-50 disabled:opacity-40"
-            title={`Import master schedule tasks from ${activeDate} onward into the “Undefined” swimlane`}>
-            {importBusy ? "Importing…" : "⬇ Import Master"}
-          </button>
           <button onClick={() => projectFileRef.current?.click()} disabled={importBusy}
             className="rounded border border-[#1A3560] px-3 py-1.5 text-sm font-medium text-[#1A3560] hover:bg-blue-50 disabled:opacity-40"
             title="Import tasks from a Microsoft Project file (File → Save As → XML Format in MS Project)">
@@ -1378,13 +1159,6 @@ export default function PullPlanBoard({
               if (f) importProjectFile(f);
               e.target.value = ""; // allow re-selecting the same file
             }} />
-          {isAdmin && importSkips.size > 0 && (
-            <button onClick={resetImportSkips} disabled={importBusy}
-              className="rounded border border-zinc-400 px-3 py-1.5 text-sm font-medium text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
-              title="Allow master tasks you previously removed from the Pull Plan to be imported again">
-              ↺ Reset Import History
-            </button>
-          )}
           {isAdmin && (
             <button onClick={exportToLookahead} disabled={exportBusy || !lookaheadProjectId}
               className="rounded border border-[#2A6B35] px-3 py-1.5 text-sm font-medium text-[#2A6B35] hover:bg-green-50 disabled:opacity-40"

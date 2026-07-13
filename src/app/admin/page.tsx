@@ -15,7 +15,7 @@ export default async function AdminPage() {
     .maybeSingle()
     .returns<Profile | null>();
 
-  if (!myProfile?.is_admin) redirect("/schedule");
+  if (!myProfile?.is_admin) redirect("/pullplan");
 
   const { data: profiles } = await supabase
     .from("profiles")
@@ -28,7 +28,7 @@ export default async function AdminPage() {
       <div className="flex flex-col gap-1 mb-6">
         <h1 className="text-2xl font-bold text-[#1A3560]">User Management</h1>
         <p className="text-sm text-slate-500">
-          Control who has admin access to edit the Master Schedule.
+          Control who has admin access to the Pull Plan and Lookahead.
         </p>
       </div>
       <AdminUserList profiles={profiles ?? []} currentUserId={user.id} />
