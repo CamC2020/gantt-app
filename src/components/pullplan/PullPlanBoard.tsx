@@ -716,23 +716,31 @@ export default function PullPlanBoard({
 
   async function exportToLookahead() {
     if (!lookaheadProjectId || exportBusy) return;
-    const expTickets = tickets.filter(t => !t.status.startsWith("done_") && t.start_date && t.start_date >= lookaheadStart && t.start_date <= lookaheadEnd);
-    const expMilestones = milestones.filter(m => m.date && m.date >= lookaheadStart && m.date <= lookaheadEnd);
-    const expConstraints = constraints.filter(c => !c.resolved && c.date && c.date >= lookaheadStart && c.date <= lookaheadEnd);
+    // No lower bound on date: an unfinished item that started before this week
+    // is overdue, not irrelevant — it still belongs in the Lookahead/My Tasks
+    // until it's done. The 6-week window only caps how far AHEAD it looks.
+    const expTickets = tickets.filter(t => !t.status.startsWith("done_") && t.start_date && t.start_date <= lookaheadEnd);
+    const expMilestones = milestones.filter(m => m.date && m.date <= lookaheadEnd);
+    const expConstraints = constraints.filter(c => !c.resolved && c.date && c.date <= lookaheadEnd);
     const total = expTickets.length + expMilestones.length + expConstraints.length;
-    if (total === 0) { setError(`Nothing to export — no unfinished items between ${lookaheadStart} and ${lookaheadEnd}.`); return; }
-    if (!confirm(`Export ${total} item${total > 1 ? "s" : ""} to the Lookahead (${lookaheadStart} – ${lookaheadEnd})? This DELETES everything currently in the lookahead and replaces it.`)) return;
+    if (total === 0) { setError(`Nothing to export — no unfinished items on or before ${lookaheadEnd}.`); return; }
+    if (!confirm(`Export ${total} item${total > 1 ? "s" : ""} to the Lookahead (through ${lookaheadEnd})? This DELETES everything currently in the lookahead and replaces it.`)) return;
     setExportBusy(true);
     try {
-      // Wipe the current lookahead
+      // Wipe the current lookahead — verify the delete actually removed rows
+      // rather than trusting a lack of error (RLS blocks silently: 0 rows
+      // affected is NOT an error from Supabase), or stale tasks would linger.
       const { data: oldTasks, error: qErr } = await supa.from("tasks").select("id").eq("project_id", lookaheadProjectId);
       if (qErr) throw qErr;
       const oldIds = (oldTasks ?? []).map(t => t.id);
       if (oldIds.length) {
         await supa.from("task_dependencies").delete().in("task_id", oldIds);
         await supa.from("task_dependencies").delete().in("predecessor_id", oldIds);
-        const { error: dErr } = await supa.from("tasks").delete().eq("project_id", lookaheadProjectId);
+        const { error: dErr, data: deletedOld } = await supa.from("tasks").delete().eq("project_id", lookaheadProjectId).select("id");
         if (dErr) throw dErr;
+        if (!deletedOld || deletedOld.length !== oldIds.length) {
+          throw new Error(`Could only clear ${deletedOld?.length ?? 0} of ${oldIds.length} existing Lookahead tasks — you may not have permission to delete some of them. Nothing was exported.`);
+        }
       }
 
       // Row order mirrors the Pull Plan board: swimlane order first (same order
@@ -1176,7 +1184,7 @@ export default function PullPlanBoard({
           {isAdmin && (
             <button onClick={exportToLookahead} disabled={exportBusy || !lookaheadProjectId}
               className="rounded border border-[#2A6B35] px-3 py-1.5 text-sm font-medium text-[#2A6B35] hover:bg-green-50 disabled:opacity-40"
-              title={`Replace the 6-Week Lookahead with unfinished items from ${lookaheadStart} through ${lookaheadEnd} (current week + next 5)`}>
+              title={`Replace the 6-Week Lookahead with all unfinished items through ${lookaheadEnd} (overdue items included, current week + next 5)`}>
               {exportBusy ? "Exporting…" : "⬆ Export to Lookahead"}
             </button>
           )}
