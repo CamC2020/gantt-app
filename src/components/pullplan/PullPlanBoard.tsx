@@ -57,8 +57,6 @@ type DragMode =
   | { kind: "constraint"; id: string }
   | { kind: "resize"; id: string };
 
-const CONSTRAINT_BORDER = "#991b1b"; // darker red than the pastel-red fill, regardless of priority
-
 export default function PullPlanBoard({
   initialLanes, initialTickets, initialMilestones, initialRoles, initialDeps,
   initialMsLinks = [], initialLocations, initialSnapshots = [], initialConstraints = [], initialCLinks = [],
@@ -1330,8 +1328,7 @@ export default function PullPlanBoard({
             style={{ touchAction: "none" }}
             onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
             title={`Constraint: ${c.description}${c.need_by ? ` — need by ${c.need_by}` : ""} (drag onto the board, click to edit)`}>
-            <div className="absolute inset-1 rounded-full border-2 bg-[#fecaca] shadow"
-              style={{ borderColor: CONSTRAINT_BORDER }} />
+            <div className="absolute inset-1 rounded-full bg-[#fecaca] shadow" />
             <span className="relative px-1.5 text-center text-[8px] font-bold leading-tight text-zinc-800">
               ⚠ {c.description.length > 24 ? c.description.slice(0, 24) + "…" : c.description}
             </span>
@@ -1621,11 +1618,11 @@ export default function PullPlanBoard({
                   style={{ left, top, width: cBoxW, height: cSize, touchAction: "none", opacity: c.resolved ? 0.55 : undefined }}
                   onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
                   title={`Constraint: ${c.description}${c.need_by ? ` — need by ${c.need_by}` : ""}${c.resolved ? " (resolved)" : ""}${connectMode ? " (click to connect)" : ""}`}>
-                  <div className="absolute rounded-full border-2 bg-[#fecaca] shadow-md"
+                  <div className="absolute rounded-full bg-[#fecaca] shadow-md"
                     style={{
                       left: (cBoxW - cSize) / 2, width: cSize, height: cSize,
-                      borderColor: overdue ? "#dc2626" : CONSTRAINT_BORDER,
-                      outline: isFrom ? "3px solid #1A3560" : overdue ? "2px solid #dc2626" : undefined,
+                      border: overdue ? "2px solid #dc2626" : undefined,
+                      outline: isFrom ? "3px solid #1A3560" : undefined,
                     }} />
                   <span className="relative w-full px-1 text-center font-bold leading-tight text-zinc-800"
                     style={{ fontSize: Math.max(7, Math.round(8 * zoom)) }}>
@@ -1716,8 +1713,7 @@ export default function PullPlanBoard({
                 onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
                 onDoubleClick={() => deleteConstraint(c.id)}
                 title={`Constraint: ${c.description} (not yet active — drag onto the active zone, click to edit, double-click to remove)`}>
-                <div className="absolute inset-1 rounded-full border-2 bg-[#fecaca] shadow"
-                  style={{ borderColor: CONSTRAINT_BORDER }} />
+                <div className="absolute inset-1 rounded-full bg-[#fecaca] shadow" />
                 <span className="relative px-1.5 text-center text-[9px] font-bold leading-tight text-zinc-800">
                   ⚠ {c.description}
                 </span>
