@@ -50,6 +50,8 @@ export default function TicketModal({
   const [rbPriority, setRbPriority] = useState(ticket.roadblock_priority);
   const [notes, setNotes] = useState(ticket.notes);
   const [supp, setSupp] = useState<string[]>(supportIds);
+  const [suppQuery, setSuppQuery] = useState("");
+  const [suppOpen, setSuppOpen] = useState(false);
   // Variance prompt shown when completing early/late
   const [completing, setCompleting] = useState(false);
   const [varReason, setVarReason] = useState("");
@@ -78,9 +80,19 @@ export default function TicketModal({
     onClose();
   }
 
-  function toggleSupport(id: string) {
-    setSupp(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
+  function addSupport(id: string) {
+    setSupp(prev => (prev.includes(id) ? prev : [...prev, id]));
+    setSuppQuery("");
+    setSuppOpen(false);
   }
+  function removeSupport(id: string) {
+    setSupp(prev => prev.filter(x => x !== id));
+  }
+  const suppCandidates = members.filter(m =>
+    m.id !== ticket.responsible_id &&
+    !supp.includes(m.id) &&
+    (m.full_name || m.email).toLowerCase().includes(suppQuery.trim().toLowerCase())
+  );
 
   function handleCompleteClick() {
     if (needsVariance && !completing) { setCompleting(true); return; }
@@ -162,14 +174,52 @@ export default function TicketModal({
 
           <div className="flex flex-col gap-1">
             <span className="text-xs font-medium text-zinc-500">Support (extra crew — shows under “Support” on their My Tasks, no email reminders)</span>
-            <div className="max-h-28 overflow-y-auto rounded border border-zinc-200 p-2">
-              {members.filter(m => m.id !== ticket.responsible_id).map(m => (
-                <label key={m.id} className="flex items-center gap-2 py-0.5 text-xs text-zinc-700">
-                  <input type="checkbox" checked={supp.includes(m.id)} onChange={() => toggleSupport(m.id)} disabled={!editable} />
-                  <span className="truncate">{m.full_name || m.email}</span>
-                </label>
-              ))}
-            </div>
+
+            {supp.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {supp.map(id => {
+                  const m = members.find(x => x.id === id);
+                  if (!m) return null;
+                  return (
+                    <button key={id} type="button" disabled={!editable}
+                      onClick={() => removeSupport(id)}
+                      title={editable ? "Click to remove" : undefined}
+                      className="flex items-center gap-1 rounded-full bg-[#1A3560]/10 px-2 py-1 text-xs font-medium text-[#1A3560] hover:bg-[#1A3560]/20 disabled:cursor-default disabled:opacity-70">
+                      {m.full_name || m.email}
+                      {editable && <span className="text-[#1A3560]/50">✕</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {editable && (
+              <div className="relative">
+                <input value={suppQuery}
+                  onChange={e => { setSuppQuery(e.target.value); setSuppOpen(true); }}
+                  onFocus={() => setSuppOpen(true)}
+                  onBlur={() => setTimeout(() => setSuppOpen(false), 150)}
+                  placeholder="Type a name to add support…"
+                  className={`${inputCls} w-full`} />
+                {suppOpen && (
+                  suppCandidates.length > 0 ? (
+                    <div className="absolute z-10 mt-1 max-h-36 w-full overflow-y-auto rounded border border-zinc-200 bg-white shadow-lg">
+                      {suppCandidates.map(m => (
+                        <button key={m.id} type="button"
+                          onMouseDown={e => { e.preventDefault(); addSupport(m.id); }}
+                          className="block w-full truncate px-2 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-100">
+                          {m.full_name || m.email}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="absolute z-10 mt-1 w-full rounded border border-zinc-200 bg-white px-2 py-1.5 text-xs italic text-zinc-400 shadow-lg">
+                      No matches
+                    </div>
+                  )
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col gap-1">
