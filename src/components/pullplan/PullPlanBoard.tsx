@@ -28,6 +28,8 @@ const INACTIVE_CARD_SIZE = 88;  // fixed card size — independent of active-zon
 const MIN_ZOOM = 0.15;   // low enough to fit an entire board's worth of rows on screen at once
 const MAX_ZOOM = 4;
 
+const NO_HOLIDAYS = new Set<string>();
+
 const LANE_TINTS: [string, string][] = [
   ["#eaf6f2", "#dff0ea"], // mint  [active side, inactive side]
   ["#fdecef", "#f9e2e7"], // rose
@@ -997,7 +999,10 @@ export default function PullPlanBoard({
         if (moved && boardRef.current && t.start_date) {
           const p = boardXY(ev);
           const endDate = dateForX(Math.max(xForDate(t.start_date), p.x - 4));
-          const newDur = Math.max(1, diffInDays(t.start_date, endDate) + 1);
+          // duration is a WORKING-day count (weekends skipped unless work_sat/
+          // work_sun is set) — using calendar days here under-/over-shoots the
+          // drop date whenever the dragged span crosses a weekend.
+          const newDur = Math.max(1, countWorkingDays(t.start_date, endDate, t.work_sat, t.work_sun, NO_HOLIDAYS));
           if (newDur !== t.duration) await patchTicket(t.id, { duration: newDur });
         }
         return;
