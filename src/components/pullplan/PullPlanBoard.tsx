@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type {
   Profile, PullLane, PullTicket, PullMilestone, PullTicketStatus,
@@ -1110,6 +1110,13 @@ export default function PullPlanBoard({
   const boardScrollRef = useRef<HTMLDivElement | null>(null);
   const zoomRef = useRef(zoom);
   useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  // Cursor anchor captured on wheel, consumed by the layout effect below after
+  // the zoomed sizes have been committed to the DOM.
+  const zoomAnchorRef = useRef<{
+    offsetX: number; offsetY: number;
+    scrollLeft: number; scrollTop: number;
+    scrollWidth: number; scrollHeight: number;
+  } | null>(null);
   useEffect(() => {
     const el = boardScrollRef.current;
     if (!el) return;
@@ -1119,23 +1126,34 @@ export default function PullPlanBoard({
       const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, oldZoom * (e.deltaY < 0 ? 1.1 : 0.9)));
       if (newZoom === oldZoom) return;
       const rect = el!.getBoundingClientRect();
-      const offsetX = e.clientX - rect.left;
-      const offsetY = e.clientY - rect.top;
-      const ratio = newZoom / oldZoom;
-      const newScrollLeft = (el!.scrollLeft + offsetX) * ratio - offsetX;
-      const newScrollTop = (el!.scrollTop + offsetY) * ratio - offsetY;
+      zoomAnchorRef.current = {
+        offsetX: e.clientX - rect.left,
+        offsetY: e.clientY - rect.top,
+        scrollLeft: el!.scrollLeft,
+        scrollTop: el!.scrollTop,
+        scrollWidth: el!.scrollWidth,
+        scrollHeight: el!.scrollHeight,
+      };
       setZoom(newZoom);
-      // Sizes only update in the DOM after this render commits, so defer the
-      // scroll correction a frame — setting it now would be clamped against
-      // the still-old (pre-zoom) scrollable dimensions.
-      requestAnimationFrame(() => {
-        el!.scrollLeft = newScrollLeft;
-        el!.scrollTop = newScrollTop;
-      });
     }
     el.addEventListener("wheel", handleWheel, { passive: false });
     return () => el.removeEventListener("wheel", handleWheel);
   }, []);
+  // Runs synchronously after the re-render commits the new sizes but BEFORE the
+  // browser paints, so the corrected scroll appears in the same frame as the
+  // zoom — no top-left-anchored flash. Scaling by the container's real
+  // scrollWidth/scrollHeight (not the zoom ratio) also absorbs the pixel
+  // rounding in dayW/ticketH that made the anchor drift at high zoom.
+  useLayoutEffect(() => {
+    const el = boardScrollRef.current;
+    const a = zoomAnchorRef.current;
+    if (!el || !a) return;
+    zoomAnchorRef.current = null;
+    const rx = a.scrollWidth > 0 ? el.scrollWidth / a.scrollWidth : 1;
+    const ry = a.scrollHeight > 0 ? el.scrollHeight / a.scrollHeight : 1;
+    el.scrollLeft = (a.scrollLeft + a.offsetX) * rx - a.offsetX;
+    el.scrollTop = (a.scrollTop + a.offsetY) * ry - a.offsetY;
+  }, [zoom]);
 
   // Press-and-hold the middle mouse button to pan the active zone.
   const panRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
