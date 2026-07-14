@@ -57,11 +57,7 @@ type DragMode =
   | { kind: "constraint"; id: string }
   | { kind: "resize"; id: string };
 
-const PRIORITY_RING: Record<PullConstraint["priority"], string> = {
-  on_track: "#9ca3af",
-  needs_attention: "#f59e0b",
-  critical: "#dc2626",
-};
+const CONSTRAINT_BORDER = "#991b1b"; // darker red than the pastel-red fill, regardless of priority
 
 export default function PullPlanBoard({
   initialLanes, initialTickets, initialMilestones, initialRoles, initialDeps,
@@ -1105,17 +1101,37 @@ export default function PullPlanBoard({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Mouse wheel always zooms the active zone (no modifier needed). Attached as a
+  // Mouse wheel always zooms the active zone (no modifier needed), centered on
+  // wherever the pointer is — the date/row under the cursor stays put instead
+  // of the view always expanding from its top-left corner. Attached as a
   // native, non-passive listener — React's onWheel prop is passive by default,
   // so calling preventDefault() there is silently ignored and the whole page
   // scrolls along with (or instead of) the zoom.
   const boardScrollRef = useRef<HTMLDivElement | null>(null);
+  const zoomRef = useRef(zoom);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
   useEffect(() => {
     const el = boardScrollRef.current;
     if (!el) return;
     function handleWheel(e: WheelEvent) {
       e.preventDefault();
-      setZoom(z => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * (e.deltaY < 0 ? 1.1 : 0.9))));
+      const oldZoom = zoomRef.current;
+      const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, oldZoom * (e.deltaY < 0 ? 1.1 : 0.9)));
+      if (newZoom === oldZoom) return;
+      const rect = el!.getBoundingClientRect();
+      const offsetX = e.clientX - rect.left;
+      const offsetY = e.clientY - rect.top;
+      const ratio = newZoom / oldZoom;
+      const newScrollLeft = (el!.scrollLeft + offsetX) * ratio - offsetX;
+      const newScrollTop = (el!.scrollTop + offsetY) * ratio - offsetY;
+      setZoom(newZoom);
+      // Sizes only update in the DOM after this render commits, so defer the
+      // scroll correction a frame — setting it now would be clamped against
+      // the still-old (pre-zoom) scrollable dimensions.
+      requestAnimationFrame(() => {
+        el!.scrollLeft = newScrollLeft;
+        el!.scrollTop = newScrollTop;
+      });
     }
     el.addEventListener("wheel", handleWheel, { passive: false });
     return () => el.removeEventListener("wheel", handleWheel);
@@ -1297,7 +1313,7 @@ export default function PullPlanBoard({
             onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
             title={`Constraint: ${c.description}${c.need_by ? ` — need by ${c.need_by}` : ""} (drag onto the board, click to edit)`}>
             <div className="absolute inset-1 rounded-full border-2 bg-[#fecaca] shadow"
-              style={{ borderColor: PRIORITY_RING[c.priority] }} />
+              style={{ borderColor: CONSTRAINT_BORDER }} />
             <span className="relative px-1.5 text-center text-[8px] font-bold leading-tight text-zinc-800">
               ⚠ {c.description.length > 24 ? c.description.slice(0, 24) + "…" : c.description}
             </span>
@@ -1590,7 +1606,7 @@ export default function PullPlanBoard({
                   <div className="absolute rounded-full border-2 bg-[#fecaca] shadow-md"
                     style={{
                       left: (cBoxW - cSize) / 2, width: cSize, height: cSize,
-                      borderColor: overdue ? "#dc2626" : PRIORITY_RING[c.priority],
+                      borderColor: overdue ? "#dc2626" : CONSTRAINT_BORDER,
                       outline: isFrom ? "3px solid #1A3560" : overdue ? "2px solid #dc2626" : undefined,
                     }} />
                   <span className="relative w-full px-1 text-center font-bold leading-tight text-zinc-800"
@@ -1683,7 +1699,7 @@ export default function PullPlanBoard({
                 onDoubleClick={() => deleteConstraint(c.id)}
                 title={`Constraint: ${c.description} (not yet active — drag onto the active zone, click to edit, double-click to remove)`}>
                 <div className="absolute inset-1 rounded-full border-2 bg-[#fecaca] shadow"
-                  style={{ borderColor: PRIORITY_RING[c.priority] }} />
+                  style={{ borderColor: CONSTRAINT_BORDER }} />
                 <span className="relative px-1.5 text-center text-[9px] font-bold leading-tight text-zinc-800">
                   ⚠ {c.description}
                 </span>
