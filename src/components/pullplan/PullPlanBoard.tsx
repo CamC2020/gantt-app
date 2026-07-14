@@ -1283,7 +1283,7 @@ export default function PullPlanBoard({
             onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
             onDoubleClick={() => removeMilestone(m.id)}
             title={`Milestone: ${m.label} — drag onto the board (double-click to remove)`}>
-            <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-zinc-400 bg-zinc-200 shadow" />
+            <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-[#eab308]/50 bg-[#fef3c7] shadow" />
             <span className="relative px-1 text-center text-[8px] font-bold leading-tight text-zinc-800">{m.label}</span>
           </div>
         ))}
@@ -1294,7 +1294,7 @@ export default function PullPlanBoard({
             style={{ touchAction: "none" }}
             onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
             title={`Constraint: ${c.description}${c.need_by ? ` — need by ${c.need_by}` : ""} (drag onto the board, click to edit)`}>
-            <div className="absolute inset-1 rounded-full border-2 bg-zinc-300 shadow"
+            <div className="absolute inset-1 rounded-full border-2 bg-[#fecaca] shadow"
               style={{ borderColor: PRIORITY_RING[c.priority] }} />
             <span className="relative px-1.5 text-center text-[8px] font-bold leading-tight text-zinc-800">
               ⚠ {c.description.length > 24 ? c.description.slice(0, 24) + "…" : c.description}
@@ -1558,8 +1558,8 @@ export default function PullPlanBoard({
                   onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
                   onDoubleClick={() => { if (!connectMode) removeMilestone(m.id); }}
                   title={`Milestone: ${m.label} — ${m.date}${connectMode ? " (click to connect)" : " (drag to move, double-click to remove)"}`}>
-                  <div className="absolute inset-0 rotate-45 rounded-[3px] border border-zinc-400 shadow-md"
-                    style={{ backgroundColor: "#e5e7eb", outline: isFrom ? "3px solid #1A3560" : undefined }} />
+                  <div className="absolute inset-0 rotate-45 rounded-[3px] border border-[#eab308]/50 shadow-md"
+                    style={{ backgroundColor: "#fef3c7", outline: isFrom ? "3px solid #1A3560" : undefined }} />
                   <span className="relative px-2 text-center font-bold leading-tight text-zinc-800"
                     style={{ fontSize: Math.max(7, Math.round(9 * zoom)) }}>{m.label}</span>
                 </div>
@@ -1583,7 +1583,7 @@ export default function PullPlanBoard({
                   style={{ left, top, width: size, height: size, touchAction: "none", opacity: c.resolved ? 0.55 : undefined }}
                   onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
                   title={`Constraint: ${c.description}${c.need_by ? ` — need by ${c.need_by}` : ""}${c.resolved ? " (resolved)" : ""}${connectMode ? " (click to connect)" : ""}`}>
-                  <div className="absolute inset-0 rounded-full border-2 bg-zinc-300 shadow-md"
+                  <div className="absolute inset-0 rounded-full border-2 bg-[#fecaca] shadow-md"
                     style={{
                       borderColor: overdue ? "#dc2626" : PRIORITY_RING[c.priority],
                       outline: isFrom ? "3px solid #1A3560" : overdue ? "2px solid #dc2626" : undefined,
@@ -1666,7 +1666,7 @@ export default function PullPlanBoard({
                 onPointerDown={e => startDrag(e, { kind: "milestone", id: m.id })}
                 onDoubleClick={() => removeMilestone(m.id)}
                 title={`Milestone: ${m.label} (not yet active — drag onto the active zone, double-click to remove)`}>
-                <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-zinc-400 bg-zinc-200 shadow" />
+                <div className="absolute inset-1.5 rotate-45 rounded-[3px] border border-[#eab308]/50 bg-[#fef3c7] shadow" />
                 <span className="relative px-1 text-center text-[9px] font-bold leading-tight text-zinc-800">{m.label}</span>
               </div>
             ))}
@@ -1677,7 +1677,7 @@ export default function PullPlanBoard({
                 onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
                 onDoubleClick={() => deleteConstraint(c.id)}
                 title={`Constraint: ${c.description} (not yet active — drag onto the active zone, click to edit, double-click to remove)`}>
-                <div className="absolute inset-1 rounded-full border-2 bg-zinc-300 shadow"
+                <div className="absolute inset-1 rounded-full border-2 bg-[#fecaca] shadow"
                   style={{ borderColor: PRIORITY_RING[c.priority] }} />
                 <span className="relative px-1.5 text-center text-[9px] font-bold leading-tight text-zinc-800">
                   ⚠ {c.description}
