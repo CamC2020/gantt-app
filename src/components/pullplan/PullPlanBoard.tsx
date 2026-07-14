@@ -140,7 +140,9 @@ export default function PullPlanBoard({
   // item's start date, it flips into the date-positioned active zone automatically.
   const dayW = Math.round(BASE_DAY_W * zoom);
   const ticketH = Math.max(10, Math.round(dayW * 1.1)); // ~square for a 1-day ticket
-  const msSize = Math.max(8, Math.round(ticketH * 0.75));   // milestone/constraint circle — never taller than a ticket
+  const msSize = Math.max(8, Math.round(ticketH * 0.75));   // milestone diamond — never taller than a ticket
+  const cSize = Math.max(10, Math.round(msSize * 1.35));    // constraint circle — a bit bigger than a milestone
+  const cBoxW = cSize + 28; // wider hit-box than the circle itself, so the label has room to spill past its edge
   // Row padding shrinks with zoom too — otherwise it dominates row height at low
   // zoom and defeats the point of zooming out to fit everything on screen.
   const LANE_PAD = Math.max(2, Math.round(BASE_LANE_PAD * zoom));
@@ -274,12 +276,12 @@ export default function PullPlanBoard({
         const row = Math.min(ll.rows - 1, c.row_index);
         map.set(c.id, { cx, cy: ll.top + LANE_PAD + row * (ticketH + LANE_PAD) + ticketH / 2 });
       } else {
-        map.set(c.id, { cx, cy: 14 + msSize / 2 });
+        map.set(c.id, { cx, cy: 14 + cSize / 2 });
       }
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [constraints, laneLayouts, dayW, activeDate, ticketH, msSize]);
+  }, [constraints, laneLayouts, dayW, activeDate, ticketH, cSize]);
 
   // ── DB helpers ──────────────────────────────────────────────────────────────
   async function patchTicket(id: string, patch: Partial<PullTicket>) {
@@ -1496,7 +1498,7 @@ export default function PullPlanBoard({
                   const cp = c ? cPos.get(c.id) : undefined;
                   if (!c || !c.date || !cp || !tp || !t) return null;
                   const bad = !c.resolved && !!t.start_date && !!c.date && t.start_date <= c.date;
-                  const x1 = cp.cx + msSize / 2 + 2, y1 = cp.cy;
+                  const x1 = cp.cx + cSize / 2 + 2, y1 = cp.cy;
                   const x2 = tp.x, y2 = tp.y + ticketH / 2;
                   const bez = Math.max(16, Math.min(50, (x2 - x1) / 2));
                   const d = `M ${x1} ${y1} C ${x1 + bez} ${y1}, ${x2 - bez} ${y2}, ${x2 - 2} ${y2}`;
@@ -1571,24 +1573,27 @@ export default function PullPlanBoard({
               if (!c.date) return null;
               const pos = cPos.get(c.id);
               if (!pos) return null;
-              const size = msSize;
               const isFrom = connectFrom?.kind === "constraint" && connectFrom.id === c.id;
               const dragging = drag?.kind === "constraint" && drag.id === c.id && ghost;
-              const left = dragging ? ghost!.x - size / 2 : pos.cx - size / 2;
-              const top = dragging ? ghost!.y - size / 2 : HEADER_H + pos.cy - size / 2;
+              // The hit-box/label area (cBoxW) is wider than the circle itself
+              // (cSize), giving the description room to spill past the circle's
+              // edge instead of being squeezed into just its diameter.
+              const left = dragging ? ghost!.x - cBoxW / 2 : pos.cx - cBoxW / 2;
+              const top = dragging ? ghost!.y - cSize / 2 : HEADER_H + pos.cy - cSize / 2;
               const overdue = !c.resolved && c.need_by && c.need_by < today;
               return (
                 <div key={c.id}
                   className={`absolute flex items-center justify-center ${dragging ? "z-40 opacity-80" : "z-20"} ${connectMode ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
-                  style={{ left, top, width: size, height: size, touchAction: "none", opacity: c.resolved ? 0.55 : undefined }}
+                  style={{ left, top, width: cBoxW, height: cSize, touchAction: "none", opacity: c.resolved ? 0.55 : undefined }}
                   onPointerDown={e => startDrag(e, { kind: "constraint", id: c.id })}
                   title={`Constraint: ${c.description}${c.need_by ? ` — need by ${c.need_by}` : ""}${c.resolved ? " (resolved)" : ""}${connectMode ? " (click to connect)" : ""}`}>
-                  <div className="absolute inset-0 rounded-full border-2 bg-[#fecaca] shadow-md"
+                  <div className="absolute rounded-full border-2 bg-[#fecaca] shadow-md"
                     style={{
+                      left: (cBoxW - cSize) / 2, width: cSize, height: cSize,
                       borderColor: overdue ? "#dc2626" : PRIORITY_RING[c.priority],
                       outline: isFrom ? "3px solid #1A3560" : overdue ? "2px solid #dc2626" : undefined,
                     }} />
-                  <span className="relative px-1.5 text-center font-bold leading-tight text-zinc-800"
+                  <span className="relative w-full px-1 text-center font-bold leading-tight text-zinc-800"
                     style={{ fontSize: Math.max(7, Math.round(8 * zoom)) }}>
                     {c.resolved ? "✓ " : "⚠ "}{c.description}
                   </span>
