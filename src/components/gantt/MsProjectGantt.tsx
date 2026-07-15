@@ -805,10 +805,15 @@ export default function MsProjectGantt({
     ];
     const tableW = pCols.reduce((a, c) => a + c.w + 8, 0); // +8 ≈ cell padding
 
-    // Scale day-width to match the current on-screen zoom, capped so it fits A3
-    // landscape (~1587px minus margins) beside however wide the table came out.
+    // In fixed-range mode (the 6-week lookahead), the chart always stretches to
+    // fill the full print width — the on-screen zoom doesn't constrain it, since
+    // the on-screen day width is itself sized for the browser viewport, which is
+    // usually much narrower than an A3 landscape page. Other (non-fixed) charts
+    // keep mirroring the on-screen zoom, only capped so they still fit the page.
     const AVAIL_W = Math.max(320, 1520 - tableW);
-    const D = Math.max(2, Math.min(DAY_W, Math.floor(AVAIL_W / pDays)));
+    const D = fixedStart && fixedEnd
+      ? Math.max(2, Math.floor(AVAIL_W / pDays))
+      : Math.max(2, Math.min(DAY_W, Math.floor(AVAIL_W / pDays)));
     const R = 20;
     // Header height: 24px month row + day/week row (20px) when shown, else just month row (24px).
     const pShowDays  = D >= 16;
