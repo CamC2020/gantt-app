@@ -9,15 +9,21 @@ export async function getOrCreateLookaheadProject(): Promise<Project | null> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
 
-  const { data: existing } = await supabase
+  // Deterministically pick the OLDEST Lookahead project. maybeSingle() here was
+  // a landmine: once duplicate "Lookahead" rows existed (created by users who
+  // couldn't see the original through RLS), matching multiple rows made it
+  // return an error/null — which made this function create yet another empty
+  // duplicate on every page load, "resetting" the lookahead for everyone.
+  const { data: existingList } = await supabase
     .from("projects")
     .select("id, name, description, owner_id, is_master, created_at")
     .eq("name", "Lookahead")
     .eq("is_master", false)
-    .maybeSingle()
-    .returns<Project | null>();
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .returns<Project[]>();
 
-  if (existing) return existing;
+  if (existingList && existingList.length > 0) return existingList[0];
 
   const authed = await createAuthedClient();
   const id = crypto.randomUUID();
