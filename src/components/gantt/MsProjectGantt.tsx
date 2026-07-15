@@ -761,12 +761,17 @@ export default function MsProjectGantt({
       return out;
     }
 
-    const all = flatAll(cm);
+    // With a locked window (the 6-week lookahead), the printout covers exactly
+    // that window: tasks entirely outside it are dropped, and bars that spill
+    // over either edge get clipped at the boundary further below.
+    const all = fixedStart && fixedEnd
+      ? flatAll(cm).filter(t => t.start_date <= fixedEnd && t.end_date >= fixedStart)
+      : flatAll(cm);
     if (!all.length) return;
 
-    // Tight date range — just enough to cover all tasks
-    const pStart = all.reduce((s, t) => t.start_date < s ? t.start_date : s, all[0].start_date);
-    const pEnd   = all.reduce((s, t) => t.end_date   > s ? t.end_date   : s, all[0].end_date);
+    // Date range: the locked window if set, else tight around the tasks.
+    const pStart = fixedStart ?? all.reduce((s, t) => t.start_date < s ? t.start_date : s, all[0].start_date);
+    const pEnd   = fixedEnd   ?? all.reduce((s, t) => t.end_date   > s ? t.end_date   : s, all[0].end_date);
     const pDays  = diffInDays(pStart, pEnd) + 1;
 
     // Scale day-width to match the current on-screen zoom, capped so it fits A3 landscape.
@@ -826,8 +831,11 @@ export default function MsProjectGantt({
       const hasKids = (cm.get(task.id) ?? []).length > 0;
       const isCon = task.is_constraint ?? false;
       const isMile = (task.is_milestone ?? false) && !isCon;
-      const off = diffInDays(pStart, task.start_date);
-      const calW = Math.max((diffInDays(task.start_date, task.end_date) + 1) * D, 3);
+      // Clip bars at the window edges so nothing extends past the printed range.
+      const barStart = task.start_date < pStart ? pStart : task.start_date;
+      const barEnd = task.end_date > pEnd ? pEnd : task.end_date;
+      const off = diffInDays(pStart, barStart);
+      const calW = Math.max((diffInDays(barStart, barEnd) + 1) * D, 3);
       const color = hasKids ? "#1A3560" : (task.role_id ? (roles.find(r => r.id === task.role_id)?.color ?? "#94A3B8") : "#94A3B8");
       const cy = idx * R + R / 2;
 
