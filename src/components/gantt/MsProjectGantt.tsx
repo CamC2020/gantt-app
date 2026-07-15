@@ -179,10 +179,22 @@ export default function MsProjectGantt({
   const resizeStartW = useRef(LEFT_W);
   const MIN_LEFT_W = 180;
 
-  // In fixed-range mode, auto-fit day width so the full period fills the viewport width
+  // In fixed-range mode, auto-fit day width so the full period exactly fills the
+  // grid container — measured with a ResizeObserver (window.innerWidth over-counts
+  // page padding and isn't reactive), so the chart never scrolls horizontally.
   const fixedDays = fixedStart && fixedEnd ? diffInDays(fixedStart, fixedEnd) + 1 : null;
+  const scrollBoxRef = useRef<HTMLDivElement | null>(null);
+  const [containerW, setContainerW] = useState(0);
+  useEffect(() => {
+    const el = scrollBoxRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setContainerW(el.clientWidth));
+    ro.observe(el);
+    setContainerW(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
   const DAY_W = fixedDays
-    ? Math.max(2, Math.floor((typeof window !== "undefined" ? window.innerWidth - leftW - 32 : 900) / fixedDays))
+    ? Math.max(2, Math.floor(((containerW || 900) - leftW - 2) / fixedDays))
     : Math.max(2, Math.round(BASE_DAY_W * zoom));
 
   useEffect(() => { supa.auth.getSession(); }, [supa]);
@@ -774,9 +786,28 @@ export default function MsProjectGantt({
     const pEnd   = fixedEnd   ?? all.reduce((s, t) => t.end_date   > s ? t.end_date   : s, all[0].end_date);
     const pDays  = diffInDays(pStart, pEnd) + 1;
 
-    // Scale day-width to match the current on-screen zoom, capped so it fits A3 landscape.
-    // Available chart width ≈ 1050px (A3 landscape ~1587px minus margins and table ~410px).
-    const AVAIL_W = 1050;
+    // Print table columns mirror the on-screen table (minus the actions column).
+    const pCols: { label: string; w: number; center?: boolean; cell: (t: Task) => string }[] = [
+      { label: "#", w: 38, cell: t => `<span style="font-family:monospace">${wbsMap.get(t.id) ?? ""}</span>` },
+      { label: "Task Name", w: 200, cell: t => t.title },
+      { label: "Days", w: 32, center: true, cell: () => "" }, // filled per-row below (needs computed duration)
+      { label: "Start", w: 64, center: true, cell: t => `<span style="font-family:monospace">${t.start_date}</span>` },
+      { label: "Finish", w: 64, center: true, cell: t => `<span style="font-family:monospace">${t.end_date}</span>` },
+      { label: "Pred.", w: 46, center: true, cell: t => (predsOf.get(t.id) ?? []).map(d => wbsMap.get(d.predecessor_id)).filter(Boolean).join(", ") },
+      { label: "Lag", w: 28, center: true, cell: t => { const ds = predsOf.get(t.id) ?? []; return ds.length && ds[0].lag_days ? String(ds[0].lag_days) : ""; } },
+      ...(!hideChampionCol ? [{ label: "Champion", w: 82, cell: (t: Task) => { const p = t.champion_id ? memberMap.get(t.champion_id) : undefined; return p ? (p.full_name || p.email.split("@")[0]) : ""; } }] : []),
+      ...(!hideSupportCol ? [{ label: "Support", w: 92, cell: (t: Task) => (supportOf.get(t.id) ?? []).map(id => { const p = memberMap.get(id); return p ? (p.full_name || p.email).split(" ")[0] : ""; }).filter(Boolean).join(", ") }] : []),
+      { label: "Sat", w: 24, center: true, cell: t => (t.work_sat ? "✓" : "") },
+      { label: "Sun", w: 24, center: true, cell: t => (t.work_sun ? "✓" : "") },
+      { label: "Role/Trade", w: 74, cell: t => (t.role_id ? (roles.find(r => r.id === t.role_id)?.name ?? "") : "") },
+      ...(!hideCrewCol ? [{ label: "Crew", w: 30, center: true, cell: (t: Task) => (t.crew_size != null ? String(t.crew_size) : "") }] : []),
+      ...(!hideDtcCol ? [{ label: "DTC", w: 30, center: true, cell: (t: Task) => { if (t.is_milestone || t.is_constraint) return ""; const today = todayISO(); return t.end_date >= today ? String(countWorkingDays(today, t.end_date, t.work_sat ?? false, t.work_sun ?? false, holidaySet)) : "0"; } }] : []),
+    ];
+    const tableW = pCols.reduce((a, c) => a + c.w + 8, 0); // +8 ≈ cell padding
+
+    // Scale day-width to match the current on-screen zoom, capped so it fits A3
+    // landscape (~1587px minus margins) beside however wide the table came out.
+    const AVAIL_W = Math.max(320, 1520 - tableW);
     const D = Math.max(2, Math.min(DAY_W, Math.floor(AVAIL_W / pDays)));
     const R = 20;
     // Header height: 24px month row + day/week row (20px) when shown, else just month row (24px).
@@ -903,13 +934,19 @@ export default function MsProjectGantt({
       const bg = isCon ? "#fde8e8" : isMile ? "#fef3e1" : LEVEL_BG[Math.min(lvl, LEVEL_BG.length - 1)];
       const durLabel = isCon ? "C" : isMile ? "M" : `${wDur}d`;
       const durColor = isCon ? "#dc2626" : "#374151";
-      tableRows += `<tr style="height:${R}px;background:${bg}">
-        <td style="padding:0 4px;font-size:9px;color:#6b7280;font-family:monospace">${wbs}</td>
-        <td style="padding:0 4px;padding-left:${6 + lvl * 10}px;font-size:10px;font-weight:${hasKids ? 600 : 400};overflow:hidden;max-width:200px;white-space:nowrap">${task.title}</td>
-        <td style="padding:0 4px;font-size:9px;text-align:center;color:${durColor};font-weight:${isCon ? 700 : 400}">${durLabel}</td>
-        <td style="padding:0 4px;font-size:9px;text-align:center;color:#374151;font-family:monospace">${task.start_date}</td>
-        <td style="padding:0 4px;font-size:9px;text-align:center;color:#374151;font-family:monospace">${task.end_date}</td>
-      </tr>`;
+      const cells = pCols.map(c => {
+        if (c.label === "Days") {
+          return `<td style="padding:0 4px;font-size:9px;text-align:center;color:${durColor};font-weight:${isCon ? 700 : 400}">${durLabel}</td>`;
+        }
+        if (c.label === "Task Name") {
+          return `<td style="padding:0 4px;padding-left:${6 + lvl * 10}px;font-size:10px;font-weight:${hasKids ? 600 : 400};overflow:hidden;max-width:${c.w}px;white-space:nowrap">${task.title}</td>`;
+        }
+        if (c.label === "#") {
+          return `<td style="padding:0 4px;font-size:9px;color:#6b7280;font-family:monospace">${wbs}</td>`;
+        }
+        return `<td style="padding:0 4px;font-size:9px;${c.center ? "text-align:center;" : ""}color:#374151;overflow:hidden;max-width:${c.w}px;white-space:nowrap">${c.cell(task)}</td>`;
+      }).join("");
+      tableRows += `<tr style="height:${R}px;background:${bg}">${cells}</tr>`;
     });
 
     // Month header for chart — two rows when showing days or weeks
@@ -1037,11 +1074,7 @@ export default function MsProjectGantt({
       <table>
         <thead>
           <tr style="height:${HEAD}px;background:#1A3560;color:white">
-            <td style="padding:0 4px;font-size:9px;width:38px">#</td>
-            <td style="padding:0 4px;font-size:9px;width:200px">Task Name</td>
-            <td style="padding:0 4px;font-size:9px;width:36px;text-align:center">Days</td>
-            <td style="padding:0 4px;font-size:9px;width:68px;text-align:center">Start</td>
-            <td style="padding:0 4px;font-size:9px;width:68px;text-align:center">Finish</td>
+            ${pCols.map(c => `<td style="padding:0 4px;font-size:9px;width:${c.w}px;${c.center ? "text-align:center;" : ""}">${c.label}</td>`).join("")}
           </tr>
         </thead>
         <tbody>${tableRows}</tbody>
@@ -1095,7 +1128,8 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
 
       {/* ── MAIN GRID ── */}
       <div
-        className="relative overflow-x-auto overflow-y-auto rounded-lg border border-zinc-300 bg-white"
+        ref={scrollBoxRef}
+        className={`relative ${fixedDays ? "overflow-x-hidden" : "overflow-x-auto"} overflow-y-auto rounded-lg border border-zinc-300 bg-white`}
         style={{ maxHeight: "70vh" }}
         onPointerMove={e => {
           if (resizingRef.current) {
@@ -1214,9 +1248,17 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
             const taskDeps  = predsOf.get(task.id) ?? [];
             const predLbl  = taskDeps.map(d => wbsMap.get(d.predecessor_id)).filter(Boolean).join(", ");
             const lagVal   = taskDeps.length ? taskDeps[0].lag_days : 0;
-            const left     = dayOff(task.start_date) * DAY_W;
+            // In fixed-range mode, clip bars at the window edges (a bar poking
+            // past the right edge would otherwise widen the scroll area and
+            // re-introduce horizontal scrolling).
+            const rawLeft  = dayOff(task.start_date) * DAY_W;
             const calDur   = diffInDays(task.start_date, task.end_date) + 1;
-            const barW     = Math.max(calDur * DAY_W, 6);
+            const rawBarW  = Math.max(calDur * DAY_W, 6);
+            const left     = fixedDays ? Math.max(0, rawLeft) : rawLeft;
+            const barW     = fixedDays
+              ? Math.min(chartW, rawLeft + rawBarW) - left
+              : rawBarW;
+            const inWindow = !fixedDays || barW > 0;
             const isET     = edit?.taskId === task.id && edit.field === "title";
             const isEP     = edit?.taskId === task.id && edit.field === "pred";
             const isEL     = edit?.taskId === task.id && edit.field === "lag";
@@ -1535,7 +1577,7 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                   ) : null; })()}
 
                   {/* Constraint circle */}
-                  {isCon && (
+                  {isCon && inWindow && (
                     <div
                       className="absolute pointer-events-none z-0 rounded-full"
                       style={{
@@ -1549,7 +1591,7 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                   )}
 
                   {/* Milestone diamond */}
-                  {isMile && (
+                  {isMile && inWindow && (
                     <div
                       className="absolute pointer-events-none z-0"
                       style={{
@@ -1564,7 +1606,7 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                   )}
 
                   {/* Regular / summary bar */}
-                  {!isMile && !isCon && (
+                  {!isMile && !isCon && inWindow && (
                     <div
                       className={`group/bar absolute top-1/2 -translate-y-1/2 flex items-center overflow-hidden shadow-sm
                         ${hasKids ? "" : "rounded"}
@@ -1584,7 +1626,7 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                   )}
 
                   {/* Champion initials badge (Lookahead) */}
-                  {championBadge && !hasKids && !isMile && !isCon && champProfile && (
+                  {championBadge && !hasKids && !isMile && !isCon && inWindow && champProfile && (
                     <div
                       className="absolute top-1/2 -translate-y-1/2 flex items-center justify-center rounded-full border-2 border-white text-[8px] font-bold text-white shadow z-10"
                       style={{ left: left + barW - 9, width: 18, height: 18, backgroundColor: champColorMap.get(task.champion_id!) ?? "#1A3560" }}
@@ -1594,7 +1636,7 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                   )}
 
                   {/* Summary end caps */}
-                  {hasKids && !isMile && (
+                  {hasKids && !isMile && inWindow && (
                     <>
                       <div className="absolute top-1/2 -translate-y-1/2 w-2 h-3" style={{ left, backgroundColor: "#1A3560", clipPath: "polygon(0 0,100% 0,0 100%)" }} />
                       <div className="absolute top-1/2 -translate-y-1/2 w-2 h-3" style={{ left: left + barW - 8, backgroundColor: "#1A3560", clipPath: "polygon(100% 0,0 0,100% 100%)" }} />
