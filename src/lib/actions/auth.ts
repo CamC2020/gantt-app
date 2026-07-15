@@ -34,7 +34,7 @@ export async function signUp(
   }
 
   revalidatePath("/", "layout");
-  redirect("/projects");
+  redirect("/");
 }
 
 export async function signIn(
@@ -59,7 +59,7 @@ export async function signIn(
   }
 
   revalidatePath("/", "layout");
-  redirect("/projects");
+  redirect("/");
 }
 
 export async function signOut() {
