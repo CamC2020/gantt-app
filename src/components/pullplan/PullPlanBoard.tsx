@@ -1219,13 +1219,6 @@ export default function PullPlanBoard({
           title={`Promise all planned tickets scheduled through ${promiseNowEnd}`}>
           📌 Promise Now{promiseNowTargets.length > 0 ? ` (${promiseNowTargets.length})` : ""}
         </button>
-        <div className="ml-2 flex items-center gap-1">
-          <button onClick={() => setZoom(z => Math.max(MIN_ZOOM, z - 0.15))}
-            className="rounded border border-zinc-300 px-2 py-1 text-sm text-zinc-600 hover:bg-zinc-50">−</button>
-          <span className="w-10 text-center text-xs text-zinc-500">{Math.round(zoom * 100)}%</span>
-          <button onClick={() => setZoom(z => Math.min(MAX_ZOOM, z + 0.15))}
-            className="rounded border border-zinc-300 px-2 py-1 text-sm text-zinc-600 hover:bg-zinc-50">+</button>
-        </div>
         {connectMode && (
           <span className="text-xs font-medium text-[#1A3560]">
             {connectFrom ? "Now click the ticket that FOLLOWS." : "Click the ticket that comes FIRST."} (Esc to exit)
@@ -1730,6 +1723,12 @@ export default function PullPlanBoard({
             <span className="inline-block h-3 w-3 rounded-sm" style={{ backgroundColor: r.color }} />{r.name}
           </span>
         ))}
+        {/* Zoom lives on the scroll wheel, not a button — but the gesture is
+            invisible, so the current level doubles as the hint that it exists. */}
+        <span className="flex items-center gap-1.5 text-zinc-400" title="Scroll to zoom (centred on the pointer) · hold the middle mouse button to pan">
+          <span className="font-mono tabular-nums text-zinc-500">{Math.round(zoom * 100)}%</span>
+          <span className="hidden sm:inline">scroll to zoom · middle-drag to pan</span>
+        </span>
         <span className="ml-auto flex items-center gap-3">
           <span><span className="mr-1 inline-block h-2 w-2 rounded-full border border-zinc-400 bg-zinc-900 align-middle" />promised</span>
           <span>🚧 constraint</span>
