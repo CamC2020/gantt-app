@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useOptimistic, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import type { Task, TaskNote, TaskStatus } from "@/lib/supabase/types";
+import type { Task, TaskStatus } from "@/lib/supabase/types";
+import { useTaskSync } from "@/lib/useTaskSync";
+import StatusButtons, { STATUS_LABELS, STATUS_STYLES } from "./StatusButtons";
 
 interface EnrichedTask extends Task {
   note: string;
@@ -15,18 +17,6 @@ interface Props {
   tasks: EnrichedTask[];
   userId: string;
 }
-
-const STATUS_LABELS: Record<TaskStatus, string> = {
-  not_started: "Not Started",
-  in_progress: "In Progress",
-  done: "Done",
-};
-
-const STATUS_STYLES: Record<TaskStatus, string> = {
-  not_started: "bg-zinc-100 text-zinc-600",
-  in_progress: "bg-blue-100 text-blue-700",
-  done: "bg-green-100 text-green-700",
-};
 
 function urgencyStyle(days: number, status: TaskStatus) {
   if (status === "done") return "border-l-4 border-green-300";
@@ -46,23 +36,23 @@ function urgencyBadge(days: number, status: TaskStatus) {
 }
 
 export default function MyTasksView({ tasks: initialTasks, userId }: Props) {
-  const [tasks, setTasks] = useState(initialTasks);
+  useTaskSync();
+
+  // Server data is authoritative; useOptimistic only carries the in-flight flip
+  // until router.refresh() lands the real row.
+  const [tasks, setOptimisticStatus] = useOptimistic(
+    initialTasks,
+    (current, patch: { id: string; status: TaskStatus }) =>
+      current.map(t => (t.id === patch.id ? { ...t, status: patch.status } : t))
+  );
+
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [noteValues, setNoteValues] = useState<Record<string, string>>(
     Object.fromEntries(initialTasks.map(t => [t.id, t.note]))
   );
   const [savingNote, setSavingNote] = useState<string | null>(null);
-  const [savingStatus, setSavingStatus] = useState<string | null>(null);
-  const [, startTransition] = useTransition();
 
   const supa = createClient();
-
-  async function updateStatus(taskId: string, status: TaskStatus) {
-    setSavingStatus(taskId);
-    await supa.rpc("update_task_status", { p_task_id: taskId, p_status: status });
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status } : t));
-    setSavingStatus(null);
-  }
 
   async function saveNote(taskId: string) {
     setSavingNote(taskId);
@@ -124,25 +114,14 @@ export default function MyTasksView({ tasks: initialTasks, userId }: Props) {
         {expanded && (
           <div className="px-4 pb-4 border-t border-zinc-100 pt-3 space-y-4">
             {/* Status selector */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <label className="text-xs font-semibold text-zinc-500 w-14 shrink-0">Status</label>
-              <div className="flex gap-2">
-                {(["not_started", "in_progress", "done"] as TaskStatus[]).map(s => (
-                  <button
-                    key={s}
-                    disabled={savingStatus === task.id}
-                    onClick={() => startTransition(() => { updateStatus(task.id, s); })}
-                    className={`text-xs px-3 py-1 rounded-full font-medium border transition-colors ${
-                      task.status === s
-                        ? `${STATUS_STYLES[s]} border-transparent ring-2 ring-offset-1 ring-blue-400`
-                        : "bg-white text-zinc-500 border-zinc-200 hover:border-zinc-400"
-                    }`}
-                  >
-                    {STATUS_LABELS[s]}
-                  </button>
-                ))}
-              </div>
-              {savingStatus === task.id && <span className="text-xs text-zinc-400">Saving…</span>}
+              <StatusButtons
+                taskId={task.id}
+                status={task.status}
+                canEdit
+                onOptimistic={s => setOptimisticStatus({ id: task.id, status: s })}
+              />
             </div>
 
             {/* Notes */}

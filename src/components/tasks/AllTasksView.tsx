@@ -1,7 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useOptimistic, useState } from "react";
 import type { Task, TaskStatus } from "@/lib/supabase/types";
+import { useTaskSync } from "@/lib/useTaskSync";
+import StatusButtons, { STATUS_LABELS, STATUS_STYLES } from "./StatusButtons";
 
 interface EnrichedTask extends Task {
   championName: string | null;
@@ -9,24 +11,13 @@ interface EnrichedTask extends Task {
   supportNames: string[];
   parentTitle: string | null;
   daysUntilEnd: number;
+  canEdit: boolean;
 }
 
 interface Props {
   tasks: EnrichedTask[];
   people: string[];
 }
-
-const STATUS_LABELS: Record<TaskStatus, string> = {
-  not_started: "Not Started",
-  in_progress: "In Progress",
-  done: "Done",
-};
-
-const STATUS_STYLES: Record<TaskStatus, string> = {
-  not_started: "bg-zinc-100 text-zinc-600",
-  in_progress: "bg-blue-100 text-blue-700",
-  done: "bg-green-100 text-green-700",
-};
 
 function urgencyStyle(days: number, status: TaskStatus) {
   if (status === "done") return "border-l-4 border-green-300";
@@ -48,7 +39,19 @@ function taskPeople(task: EnrichedTask): string[] {
   return [task.championName, task.assigneeName, ...task.supportNames].filter((n): n is string => !!n);
 }
 
-export default function AllTasksView({ tasks, people }: Props) {
+export default function AllTasksView({ tasks: serverTasks, people }: Props) {
+  useTaskSync();
+
+  // Server data is the source of truth. useOptimistic layers the in-flight status
+  // flip on top and discards it once fresh props arrive — so a change made on My
+  // Tasks (or by a teammate) always wins over a local guess.
+  const [tasks, setOptimisticStatus] = useOptimistic(
+    serverTasks,
+    (current, patch: { id: string; status: TaskStatus }) =>
+      current.map(t => (t.id === patch.id ? { ...t, status: patch.status } : t))
+  );
+
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [personFilter, setPersonFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"active" | "done" | "all">("active");
   const [search, setSearch] = useState("");
@@ -70,11 +73,16 @@ export default function AllTasksView({ tasks, people }: Props) {
   );
 
   function renderTask(task: EnrichedTask) {
+    const expanded = expandedId === task.id;
     const badge = urgencyBadge(task.daysUntilEnd, task.status);
 
     return (
-      <div key={task.id} className={`rounded-lg bg-white shadow-sm px-4 py-3 ${urgencyStyle(task.daysUntilEnd, task.status)}`}>
-        <div className="flex items-start gap-3">
+      <div key={task.id} className={`rounded-lg bg-white shadow-sm ${urgencyStyle(task.daysUntilEnd, task.status)}`}>
+        <button
+          className="w-full text-left px-4 py-3 flex items-start gap-3"
+          onClick={() => setExpandedId(expanded ? null : task.id)}
+        >
+          <span className="mt-0.5 text-zinc-400 text-xs w-4 shrink-0">{expanded ? "▼" : "▶"}</span>
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-[#1A3560] text-sm leading-snug">{task.title}</span>
@@ -119,14 +127,36 @@ export default function AllTasksView({ tasks, people }: Props) {
               {STATUS_LABELS[task.status]}
             </span>
           </div>
-        </div>
+        </button>
+
+        {expanded && (
+          <div className="px-4 pb-4 border-t border-zinc-100 pt-3 space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="text-xs font-semibold text-zinc-500 w-14 shrink-0">Status</label>
+              <StatusButtons
+                taskId={task.id}
+                status={task.status}
+                canEdit={task.canEdit}
+                onOptimistic={s => setOptimisticStatus({ id: task.id, status: s })}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-zinc-500 border-t border-zinc-100 pt-3">
+              <span><span className="font-semibold">Start:</span> {task.start_date}</span>
+              <span><span className="font-semibold">Finish:</span> {task.end_date}</span>
+              {!task.is_milestone && (
+                <span><span className="font-semibold">Duration:</span> {Math.abs(task.daysUntilEnd)}d remaining</span>
+              )}
+              <span><span className="font-semibold">Works Sat/Sun:</span> {task.work_sat ? "✓" : "—"} / {task.work_sun ? "✓" : "—"}</span>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 rounded-lg bg-white shadow-sm px-4 py-3">
         <div className="flex items-center gap-2">
           <label className="text-xs font-semibold text-zinc-500">Person</label>
@@ -169,7 +199,6 @@ export default function AllTasksView({ tasks, people }: Props) {
         <span className="text-xs text-zinc-400">{sorted.length} task{sorted.length === 1 ? "" : "s"}</span>
       </div>
 
-      {/* Task list */}
       {sorted.length === 0 ? (
         <p className="text-sm text-zinc-400 italic px-1">No tasks match these filters.</p>
       ) : (

@@ -37,6 +37,8 @@ export default async function AllTasksPage() {
       .returns<TaskSupport[]>(),
   ]);
 
+  const isAdmin = (profiles ?? []).find(p => p.id === user.id)?.is_admin ?? false;
+
   const allTasks = tasks ?? [];
 
   if (allTasks.length === 0) {
@@ -68,7 +70,12 @@ export default async function AllTasksPage() {
   const parentMap = new Map((parents ?? []).map(p => [p.id, p.title]));
 
   const supportByTask = new Map<string, string[]>();
+  const supporterIdsByTask = new Map<string, Set<string>>();
   for (const s of support ?? []) {
+    const ids = supporterIdsByTask.get(s.task_id) ?? new Set<string>();
+    ids.add(s.user_id);
+    supporterIdsByTask.set(s.task_id, ids);
+
     const name = profileMap.get(s.user_id);
     if (!name) continue;
     const list = supportByTask.get(s.task_id) ?? [];
@@ -85,6 +92,13 @@ export default async function AllTasksPage() {
     supportNames: supportByTask.get(t.id) ?? [],
     parentTitle: t.parent_id ? parentMap.get(t.parent_id) ?? null : null,
     daysUntilEnd: diffInDays(today, t.end_date),
+    // Mirrors the update_task_status RPC's own check (003_admin.sql) so the UI
+    // only offers controls the database will actually accept.
+    canEdit:
+      isAdmin ||
+      t.champion_id === user.id ||
+      t.assignee_id === user.id ||
+      (supporterIdsByTask.get(t.id)?.has(user.id) ?? false),
   }));
 
   const people = (profiles ?? [])
