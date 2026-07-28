@@ -4,13 +4,39 @@ import { useOptimistic, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { Task, TaskStatus } from "@/lib/supabase/types";
 import { useTaskSync } from "@/lib/useTaskSync";
+import { avatarColor, initials } from "@/lib/people";
 import StatusButtons, { STATUS_LABELS, STATUS_STYLES } from "./StatusButtons";
+
+interface Supporter {
+  id: string;
+  name: string;
+}
 
 interface EnrichedTask extends Task {
   note: string;
   role: "champion" | "assignee" | "support";
   parentTitle: string | null;
   daysUntilEnd: number;
+  championName: string | null;
+  assigneeName: string | null;
+  supporters: Supporter[];
+}
+
+function PersonPill({ person }: { person: Supporter }) {
+  return (
+    <span
+      title={person.name}
+      className="inline-flex items-center gap-1.5 rounded-full bg-zinc-100 py-0.5 pl-0.5 pr-2 text-[11px] text-zinc-600"
+    >
+      <span
+        style={{ background: avatarColor(person.id) }}
+        className="inline-grid h-4 w-4 place-items-center rounded-full text-[8px] font-bold text-white"
+      >
+        {initials(person.name)}
+      </span>
+      {person.name}
+    </span>
+  );
 }
 
 interface Props {
@@ -102,6 +128,12 @@ export default function MyTasksView({ tasks: initialTasks, userId }: Props) {
               <span>End: <span className="font-mono">{task.end_date}</span></span>
               {!task.is_milestone && <span>{task.daysUntilEnd < 0 ? `${Math.abs(task.daysUntilEnd)}d past` : `${task.daysUntilEnd}d remaining`}</span>}
             </div>
+            {task.supporters.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-zinc-400">Support:</span>
+                {task.supporters.map(p => <PersonPill key={p.id} person={p} />)}
+              </div>
+            )}
           </div>
           <div className="shrink-0">
             <span className={`text-[10px] px-2 py-1 rounded-full font-semibold ${STATUS_STYLES[task.status]}`}>
@@ -147,6 +179,12 @@ export default function MyTasksView({ tasks: initialTasks, userId }: Props) {
 
             {/* Task metadata */}
             <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-zinc-500 border-t border-zinc-100 pt-3">
+              {task.championName && (
+                <span><span className="font-semibold">Champion:</span> {task.championName}</span>
+              )}
+              {task.assigneeName && (
+                <span><span className="font-semibold">Assignee:</span> {task.assigneeName}</span>
+              )}
               <span><span className="font-semibold">Start:</span> {task.start_date}</span>
               <span><span className="font-semibold">Finish:</span> {task.end_date}</span>
               {!task.is_milestone && (

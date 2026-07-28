@@ -3,7 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { getOrCreateLookaheadProject } from "@/lib/actions/master";
 import MyTasksView from "@/components/tasks/MyTasksView";
 import { diffInDays, todayISO } from "@/lib/date";
-import type { Task, TaskNote, TaskSupport } from "@/lib/supabase/types";
+import { displayName } from "@/lib/people";
+import type { Profile, Task, TaskNote, TaskSupport } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
 
@@ -55,9 +56,9 @@ export default async function MyTasksPage() {
         <div className="rounded-lg border border-dashed border-zinc-300 bg-white px-6 py-12 text-center">
           <p className="text-zinc-500">No tasks are currently assigned to you.</p>
           <p className="mt-1 text-sm text-zinc-400">
-            Tasks appear here once they're exported to the{" "}
+            Tasks appear here once they&rsquo;re exported to the{" "}
             <a href="/lookahead" className="underline hover:text-zinc-600">Lookahead</a>{" "}
-            and you're set as champion, assignee, or support.
+            and you&rsquo;re set as champion, assignee, or support.
           </p>
         </div>
       </div>
@@ -67,7 +68,9 @@ export default async function MyTasksPage() {
   const taskIds = allTasks.map(t => t.id);
   const parentIds = [...new Set(allTasks.map(t => t.parent_id).filter((id): id is string => !!id))];
 
-  const [{ data: notes }, { data: parents }] = await Promise.all([
+  // Everyone supporting these tasks, not just me — the point is seeing who else
+  // is on the job alongside you.
+  const [{ data: notes }, { data: parents }, { data: allSupport }, { data: profiles }] = await Promise.all([
     supabase.from("task_notes")
       .select("id, task_id, user_id, content, updated_at")
       .in("task_id", taskIds)
@@ -76,10 +79,26 @@ export default async function MyTasksPage() {
     parentIds.length > 0
       ? supabase.from("tasks").select("id, title").in("id", parentIds)
       : Promise.resolve({ data: [] as { id: string; title: string }[] }),
+    supabase.from("task_support")
+      .select("task_id, user_id")
+      .in("task_id", taskIds)
+      .returns<TaskSupport[]>(),
+    supabase.from("profiles")
+      .select("id, email, full_name, is_admin")
+      .returns<Profile[]>(),
   ]);
 
   const noteMap = new Map((notes ?? []).map(n => [n.task_id, n.content]));
   const parentMap = new Map((parents ?? []).map(p => [p.id, p.title]));
+  const nameMap = new Map((profiles ?? []).map(p => [p.id, displayName(p.full_name, p.email)]));
+
+  const supportByTask = new Map<string, string[]>();
+  for (const s of allSupport ?? []) {
+    const list = supportByTask.get(s.task_id) ?? [];
+    list.push(s.user_id);
+    supportByTask.set(s.task_id, list);
+  }
+
   const today = todayISO();
 
   const enrich = (t: Task, role: "champion" | "assignee" | "support") => ({
@@ -88,6 +107,12 @@ export default async function MyTasksPage() {
     role,
     parentTitle: t.parent_id ? parentMap.get(t.parent_id) ?? null : null,
     daysUntilEnd: diffInDays(today, t.end_date),
+    championName: t.champion_id ? nameMap.get(t.champion_id) ?? null : null,
+    assigneeName: t.assignee_id ? nameMap.get(t.assignee_id) ?? null : null,
+    // Exclude yourself — you already know you're on it; you want the others.
+    supporters: (supportByTask.get(t.id) ?? [])
+      .filter(id => id !== user.id)
+      .map(id => ({ id, name: nameMap.get(id) ?? "Unknown" })),
   });
 
   const enriched = [

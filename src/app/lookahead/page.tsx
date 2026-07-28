@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getOrCreateLookaheadProject } from "@/lib/actions/master";
 import MsProjectGantt from "@/components/gantt/MsProjectGantt";
-import type { Profile, Task, TaskDependency, PullRole } from "@/lib/supabase/types";
+import type { Profile, Task, TaskDependency, TaskSupport, PullRole } from "@/lib/supabase/types";
 import { formatISODate, parseISODate, addDays } from "@/lib/date";
 
 function getMondayOfWeek(dateStr: string): string {
@@ -50,12 +50,18 @@ export default async function LookaheadPage() {
   ]);
 
   const taskIdList = (tasks ?? []).map(t => t.id);
-  const { data: rawDeps } = taskIdList.length > 0
-    ? await supabase.from("task_dependencies")
-        .select("task_id, predecessor_id, lag_days")
-        .in("task_id", taskIdList)
-        .returns<TaskDependency[]>()
-    : { data: [] };
+  const [{ data: rawDeps }, { data: rawSupport }] = taskIdList.length > 0
+    ? await Promise.all([
+        supabase.from("task_dependencies")
+          .select("task_id, predecessor_id, lag_days")
+          .in("task_id", taskIdList)
+          .returns<TaskDependency[]>(),
+        supabase.from("task_support")
+          .select("task_id, user_id")
+          .in("task_id", taskIdList)
+          .returns<TaskSupport[]>(),
+      ])
+    : [{ data: [] as TaskDependency[] }, { data: [] as TaskSupport[] }];
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6 px-6 py-8">
@@ -80,7 +86,7 @@ export default async function LookaheadPage() {
           projectId={lookahead.id}
           initialTasks={tasks ?? []}
           initialDeps={rawDeps ?? []}
-          initialSupport={[]}
+          initialSupport={rawSupport ?? []}
           members={profiles ?? []}
           roles={roles ?? []}
           readOnly
@@ -90,7 +96,6 @@ export default async function LookaheadPage() {
           fixedEnd={weekEnd}
           hideCrewCol
           hideDtcCol
-          hideSupportCol
           championBadge
           hideLegendOnPrint
         />

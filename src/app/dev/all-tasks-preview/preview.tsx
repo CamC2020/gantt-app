@@ -65,7 +65,7 @@ const tasks: AllTask[] = [
     status: "in_progress",
     ownerId: P.okafor.id, ownerRole: "champion",
     counterpartId: P.mercer.id,
-    supporterIds: [P.nakamura.id, P.beaudry.id],
+    supporterIds: [P.nakamura.id, P.beaudry.id, P.whitfield.id, P.rasmussen.id, P.mercer.id],
     daysUntilEnd: 5,
   },
   {

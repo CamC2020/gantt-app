@@ -192,21 +192,13 @@ export default function AllTasksView({ tasks: serverTasks, people, directory, cu
           </span>
         </div>
 
-        {(counterpart || supporters.length > 0 || task.subcontractor) && (
+        {(counterpart || task.subcontractor) && (
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
             {counterpart && (
               <span className="inline-flex items-center gap-1.5">
                 <Avatar person={counterpart} size={18} />
                 {counterpart.name}
                 <span className="text-zinc-400">· assignee</span>
-              </span>
-            )}
-            {supporters.length > 0 && (
-              <span className="inline-flex items-center gap-1">
-                {supporters.map(p => <Avatar key={p.id} person={p} size={18} />)}
-                <span className="ml-0.5 text-zinc-400">
-                  support{supporters.length > 1 ? ` · ${supporters.length}` : ""}
-                </span>
               </span>
             )}
             {task.subcontractor && (
@@ -217,7 +209,10 @@ export default function AllTasksView({ tasks: serverTasks, people, directory, cu
           </div>
         )}
 
-        <div className="mt-0.5 border-t border-zinc-100 pt-2.5">
+        {/* Footer: status on the left, support stacked into the bottom-right
+            corner per SK-01 — mt-auto pins it to the card's base so the corner
+            stays put however tall the card grows. */}
+        <div className="mt-auto flex items-end justify-between gap-3 border-t border-zinc-100 pt-2.5">
           {task.canEdit ? (
             <StatusButtons
               taskId={task.id}
@@ -231,6 +226,27 @@ export default function AllTasksView({ tasks: serverTasks, people, directory, cu
                 {STATUS_LABELS[task.status]}
               </span>
               <span className="text-[11px] italic text-zinc-400">View only</span>
+            </div>
+          )}
+
+          {supporters.length > 0 && (
+            <div
+              className="flex shrink-0 flex-col items-end gap-1"
+              title={`Support: ${supporters.map(p => p.name).join(", ")}`}
+            >
+              <span className="text-[9.5px] uppercase tracking-wide text-zinc-400">Support</span>
+              <span className="flex -space-x-1.5">
+                {supporters.slice(0, 4).map(p => (
+                  <span key={p.id} className="rounded-full ring-2 ring-white">
+                    <Avatar person={p} size={20} />
+                  </span>
+                ))}
+                {supporters.length > 4 && (
+                  <span className="inline-grid h-5 w-5 place-items-center rounded-full bg-zinc-200 text-[9px] font-bold text-zinc-600 ring-2 ring-white">
+                    +{supporters.length - 4}
+                  </span>
+                )}
+              </span>
             </div>
           )}
         </div>
@@ -312,7 +328,9 @@ export default function AllTasksView({ tasks: serverTasks, people, directory, cu
               </span>
             </header>
 
-            <div className="grid grid-cols-1 items-start gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+            {/* Cards stretch to a common row height so every footer — and so
+                every support cluster — lines up along the same baseline. */}
+            <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
               {group.tasks.map(renderCard)}
             </div>
           </section>
