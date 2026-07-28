@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -113,7 +113,7 @@ export default function MsProjectGantt({
   hideStatHolidays = false, printTitle = "Master Schedule",
   fixedStart, fixedEnd,
   hideCrewCol = false, hideDtcCol = false, hideChampionCol = false, hideSupportCol = false,
-  championBadge = false, hideLegendOnPrint = false,
+  championBadge = false, hideLegendOnPrint = false, lookaheadStyle = false,
 }: {
   projectId: string;
   initialTasks: Task[];
@@ -132,6 +132,10 @@ export default function MsProjectGantt({
   hideSupportCol?: boolean;
   championBadge?: boolean; // show champion initials as a circle badge on the bar instead of a column
   hideLegendOnPrint?: boolean;
+  // Lookahead presentation: a readiness dot, one merged "Who" column, week bands,
+  // and no WBS/Pred/Lag/Sat/Sun — six-week planning data, not the master programme.
+  // Dependency arrows stay: they're what makes dropping Pred/Lag defensible.
+  lookaheadStyle?: boolean;
 }) {
   const router = useRouter();
   const supa   = useMemo(() => createClient(), []);
@@ -160,18 +164,56 @@ export default function MsProjectGantt({
   }, [tasks]);
 
   const COL = useMemo(() => ({
-    toggle: 26, wbs: 72, name: nameColW, dur: 52,
-    start: 80, end: 80, pred: 60, lag: 44,
-    champ: hideChampionCol ? 0 : 110,
-    supp: hideSupportCol ? 0 : 120,
-    sat: 34, sun: 34,
+    toggle: 26,
+    ready: lookaheadStyle ? 34 : 0,
+    wbs: lookaheadStyle ? 0 : 72,
+    name: nameColW, dur: 52,
+    start: 80, end: 80,
+    pred: lookaheadStyle ? 0 : 60,
+    lag: lookaheadStyle ? 0 : 44,
+    // In lookahead style champion + support collapse into one avatar column.
+    champ: lookaheadStyle || hideChampionCol ? 0 : 110,
+    supp: lookaheadStyle || hideSupportCol ? 0 : 120,
+    who: lookaheadStyle ? 104 : 0,
+    // Weekend working is shown on the bar itself instead of two tick columns.
+    sat: lookaheadStyle ? 0 : 34,
+    sun: lookaheadStyle ? 0 : 34,
     sub: 100,
     crew: hideCrewCol ? 0 : 50,
     dtc: hideDtcCol ? 0 : 46,
     act: 48,
-  }), [nameColW, hideChampionCol, hideSupportCol, hideCrewCol, hideDtcCol]);
+  }), [nameColW, hideChampionCol, hideSupportCol, hideCrewCol, hideDtcCol, lookaheadStyle]);
 
   const LEFT_W = useMemo(() => Object.values(COL).reduce((a, b) => a + b, 0), [COL]);
+
+  // Readiness — the question a six-week window exists to answer.
+  //
+  // Deliberately scoped to what the data can actually support. We do NOT know
+  // whether materials landed or a permit came back, so nothing here claims that.
+  // "Ready" means only: it's owned, dated, and not already late. The legend says
+  // so in as many words, because a green dot that overpromises is worse than no
+  // dot at all.
+  type Ready = "done" | "progress" | "blocked" | "late" | "unowned" | "ready" | "na";
+
+  const READY_META: Record<Ready, { color: string; label: string }> = {
+    done:     { color: "#16a34a", label: "Complete" },
+    progress: { color: "#2563eb", label: "In progress" },
+    blocked:  { color: "#dc2626", label: "Open constraint" },
+    late:     { color: "#dc2626", label: "Past its finish date" },
+    unowned:  { color: "#d97706", label: "Nobody assigned" },
+    ready:    { color: "#16a34a", label: "Owned, dated, not late" },
+    na:       { color: "#cbd5e1", label: "Milestone / summary" },
+  };
+
+  const readinessOf = useCallback((t: Task, hasKids: boolean): Ready => {
+    if (t.is_constraint) return "blocked";
+    if (t.is_milestone || hasKids) return "na";
+    if (t.status === "done") return "done";
+    if (t.end_date < todayISO()) return "late";
+    if (t.status === "in_progress") return "progress";
+    if (!t.champion_id && !t.assignee_id) return "unowned";
+    return "ready";
+  }, []);
 
   const [leftW,       setLeftW]       = useState(LEFT_W);
   const resizingRef = useRef(false);
@@ -787,19 +829,53 @@ export default function MsProjectGantt({
     const pDays  = diffInDays(pStart, pEnd) + 1;
 
     // Print table columns mirror the on-screen table (minus the actions column).
+    // The printed column set mirrors the screen exactly — a lookahead someone
+    // reviews on screen and the A3 they hand the Village should be the same
+    // document. Dependency arrows carry what Pred./Lag used to say.
+    const kidIds = new Set(tasks.filter(t => t.parent_id).map(t => t.parent_id as string));
     const pCols: { label: string; w: number; center?: boolean; cell: (t: Task) => string }[] = [
-      { label: "#", w: 38, cell: t => `<span style="font-family:monospace">${wbsMap.get(t.id) ?? ""}</span>` },
-      { label: "Task Name", w: 200, cell: t => t.title },
+      ...(lookaheadStyle ? [{
+        label: "", w: 16, center: true, cell: (t: Task) => {
+          const m = READY_META[readinessOf(t, kidIds.has(t.id))];
+          return `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${m.color}"></span>`;
+        },
+      }] : []),
+      ...(!lookaheadStyle ? [{ label: "#", w: 38, cell: (t: Task) => `<span style="font-family:monospace">${wbsMap.get(t.id) ?? ""}</span>` }] : []),
+      { label: lookaheadStyle ? "Activity" : "Task Name", w: lookaheadStyle ? 230 : 200, cell: t => t.title },
       { label: "Days", w: 32, center: true, cell: () => "" }, // filled per-row below (needs computed duration)
       { label: "Start", w: 64, center: true, cell: t => `<span style="font-family:monospace">${t.start_date}</span>` },
       { label: "Finish", w: 64, center: true, cell: t => `<span style="font-family:monospace">${t.end_date}</span>` },
-      { label: "Pred.", w: 46, center: true, cell: t => (predsOf.get(t.id) ?? []).map(d => wbsMap.get(d.predecessor_id)).filter(Boolean).join(", ") },
-      { label: "Lag", w: 28, center: true, cell: t => { const ds = predsOf.get(t.id) ?? []; return ds.length && ds[0].lag_days ? String(ds[0].lag_days) : ""; } },
-      ...(!hideChampionCol ? [{ label: "Champion", w: 82, cell: (t: Task) => { const p = t.champion_id ? memberMap.get(t.champion_id) : undefined; return p ? (p.full_name || p.email.split("@")[0]) : ""; } }] : []),
-      ...(!hideSupportCol ? [{ label: "Support", w: 92, cell: (t: Task) => (supportOf.get(t.id) ?? []).map(id => { const p = memberMap.get(id); return p ? (p.full_name || p.email).split(" ")[0] : ""; }).filter(Boolean).join(", ") }] : []),
-      { label: "Sat", w: 24, center: true, cell: t => (t.work_sat ? "✓" : "") },
-      { label: "Sun", w: 24, center: true, cell: t => (t.work_sun ? "✓" : "") },
-      { label: "Role/Trade", w: 74, cell: t => (t.role_id ? (roles.find(r => r.id === t.role_id)?.name ?? "") : "") },
+      ...(!lookaheadStyle ? [
+        { label: "Pred.", w: 46, center: true, cell: (t: Task) => (predsOf.get(t.id) ?? []).map(d => wbsMap.get(d.predecessor_id)).filter(Boolean).join(", ") },
+        { label: "Lag", w: 28, center: true, cell: (t: Task) => { const ds = predsOf.get(t.id) ?? []; return ds.length && ds[0].lag_days ? String(ds[0].lag_days) : ""; } },
+      ] : []),
+      // On paper the avatars can't be hovered, so "Who" prints as names —
+      // champion first, support after.
+      ...(lookaheadStyle ? [{
+        label: "Who", w: 128, cell: (t: Task) => {
+          const champ = t.champion_id ? memberMap.get(t.champion_id) : undefined;
+          const supps = (supportOf.get(t.id) ?? []).map(id => memberMap.get(id)).filter((p): p is Profile => !!p);
+          // Full names, not first-word — "T. Okafor".split(" ")[0] is just "T.",
+          // which is what the old Support column printed. Capped instead so the
+          // column can't run away on a task with five supporters.
+          const nameOf = (p: Profile) => p.full_name || p.email.split("@")[0];
+          const shown = supps.slice(0, 2).map(nameOf);
+          const extra = supps.length - shown.length;
+          const parts = [
+            ...(champ ? [`<b>${nameOf(champ)}</b>`] : []),
+            ...shown,
+            ...(extra > 0 ? [`+${extra}`] : []),
+          ];
+          return parts.length ? parts.join(", ") : `<span style="color:#d97706">Unassigned</span>`;
+        },
+      }] : []),
+      ...(!lookaheadStyle && !hideChampionCol ? [{ label: "Champion", w: 82, cell: (t: Task) => { const p = t.champion_id ? memberMap.get(t.champion_id) : undefined; return p ? (p.full_name || p.email.split("@")[0]) : ""; } }] : []),
+      ...(!lookaheadStyle && !hideSupportCol ? [{ label: "Support", w: 92, cell: (t: Task) => (supportOf.get(t.id) ?? []).map(id => { const p = memberMap.get(id); return p ? (p.full_name || p.email).split(" ")[0] : ""; }).filter(Boolean).join(", ") }] : []),
+      ...(!lookaheadStyle ? [
+        { label: "Sat", w: 24, center: true, cell: (t: Task) => (t.work_sat ? "✓" : "") },
+        { label: "Sun", w: 24, center: true, cell: (t: Task) => (t.work_sun ? "✓" : "") },
+      ] : []),
+      { label: lookaheadStyle ? "Trade" : "Role/Trade", w: 74, cell: t => (t.role_id ? (roles.find(r => r.id === t.role_id)?.name ?? "") : "") },
       ...(!hideCrewCol ? [{ label: "Crew", w: 30, center: true, cell: (t: Task) => (t.crew_size != null ? String(t.crew_size) : "") }] : []),
       ...(!hideDtcCol ? [{ label: "DTC", w: 30, center: true, cell: (t: Task) => { if (t.is_milestone || t.is_constraint) return ""; const today = todayISO(); return t.end_date >= today ? String(countWorkingDays(today, t.end_date, t.work_sat ?? false, t.work_sun ?? false, holidaySet)) : "0"; } }] : []),
     ];
@@ -1099,6 +1175,19 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
   ${legendHTML}
 </div>`}
 
+${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
+     Prints even when hideLegendOnPrint is set: the dots are the point of the
+     redesign and an unexplained colour on a handout is worse than no colour. -->
+<div style="padding:4px 10px;display:flex;align-items:center;flex-wrap:wrap;gap:9px;border-top:1px solid #e2e8f0;background:#f8fafc">
+  <span style="font-size:8px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.08em">Readiness</span>
+  ${(["ready", "progress", "unowned", "late", "blocked", "done", "na"] as const).map(k => {
+    const m = READY_META[k];
+    return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:7.5px;color:#475569">
+      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${m.color}"></span>${m.label}</span>`;
+  }).join("")}
+  <span style="font-size:7px;color:#9ca3af;font-style:italic;margin-left:auto">“Ready” means owned, dated and not overdue — it does not confirm materials or approvals.</span>
+</div>`}
+
 <!-- ── FOOTER ── -->
 <div class="page-footer">
   <div style="display:flex;align-items:center;gap:12px;flex-shrink:0">
@@ -1131,6 +1220,31 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
       )}
       {saving && <p className="text-xs text-zinc-400 animate-pulse">Saving…</p>}
 
+      {/* ── SUMMARY TILES ──
+          The at-a-glance layer before the detail. Counts only leaf activities;
+          summary rows and milestones aren't work anyone can be ready for. */}
+      {lookaheadStyle && (() => {
+        const parentIds = new Set(tasks.filter(t => t.parent_id).map(t => t.parent_id as string));
+        const leaves = tasks.filter(t => !parentIds.has(t.id) && !t.is_milestone);
+        const by = (r: Ready) => leaves.filter(t => readinessOf(t, false) === r).length;
+        const tiles: { v: number; label: string; accent: string; tone: string }[] = [
+          { v: leaves.length, label: "Activities", accent: "border-t-[#2E6EA6]", tone: "text-[#1A3560]" },
+          { v: by("ready") + by("progress"), label: "Ready to run", accent: "border-t-green-600", tone: "text-green-700" },
+          { v: by("unowned"), label: "Nobody assigned", accent: "border-t-amber-500", tone: "text-amber-600" },
+          { v: by("blocked") + by("late"), label: "Blocked or late", accent: "border-t-red-600", tone: "text-red-600" },
+        ];
+        return (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {tiles.map(t => (
+              <div key={t.label} className={`rounded-lg border-t-2 bg-white px-3 py-2 shadow-sm ${t.accent}`}>
+                <div className={`text-xl font-bold leading-none tabular-nums ${t.tone}`}>{t.v}</div>
+                <div className="mt-1 text-[10px] uppercase tracking-wider text-zinc-400">{t.label}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* ── MAIN GRID ── */}
       <div
         ref={scrollBoxRef}
@@ -1159,18 +1273,20 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
           <div className="sticky top-0 z-20 flex border-b-2 border-zinc-300">
             <div className="sticky left-0 z-30 flex shrink-0 border-r-2 border-zinc-300 bg-[#1A3560] overflow-hidden" style={{ width: leftW }}>
               <div style={{ width: COL.toggle }} />
-              <H w={COL.wbs}>#</H>
-              <H w={COL.name}>Task Name</H>
+              {lookaheadStyle && <H w={COL.ready} center title="Readiness — see legend">●</H>}
+              {!lookaheadStyle && <H w={COL.wbs}>#</H>}
+              <H w={COL.name}>{lookaheadStyle ? "Activity" : "Task Name"}</H>
               <H w={COL.dur} center>Days</H>
               <H w={COL.start} center>Start</H>
               <H w={COL.end} center>Finish</H>
-              <H w={COL.pred} center>Pred.</H>
-              <H w={COL.lag} center title="Lag days (negative = overlap)">Lag</H>
-              {!hideChampionCol && <H w={COL.champ}>Champion</H>}
-              {!hideSupportCol && <H w={COL.supp}>Support</H>}
-              <H w={COL.sat} center title="Saturday is a working day">Sat</H>
-              <H w={COL.sun} center title="Sunday is a working day">Sun</H>
-              <H w={COL.sub}>Role/Trade</H>
+              {!lookaheadStyle && <H w={COL.pred} center>Pred.</H>}
+              {!lookaheadStyle && <H w={COL.lag} center title="Lag days (negative = overlap)">Lag</H>}
+              {lookaheadStyle && <H w={COL.who} title="Champion, then support">Who</H>}
+              {!lookaheadStyle && !hideChampionCol && <H w={COL.champ}>Champion</H>}
+              {!lookaheadStyle && !hideSupportCol && <H w={COL.supp}>Support</H>}
+              {!lookaheadStyle && <H w={COL.sat} center title="Saturday is a working day">Sat</H>}
+              {!lookaheadStyle && <H w={COL.sun} center title="Sunday is a working day">Sun</H>}
+              <H w={COL.sub}>{lookaheadStyle ? "Trade" : "Role/Trade"}</H>
               {!hideCrewCol && <H w={COL.crew} center>Crew</H>}
               {!hideDtcCol && <H w={COL.dtc} center title="Working days remaining to end date">DTC</H>}
               <H w={COL.act} center />
@@ -1313,8 +1429,25 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                     )}
                   </div>
 
+                  {/* Readiness */}
+                  {lookaheadStyle && (() => {
+                    const r = readinessOf(task, hasKids);
+                    const m = READY_META[r];
+                    return (
+                      <div className="shrink-0 flex items-center justify-center" style={{ width: COL.ready }}>
+                        <span
+                          className="block h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: m.color }}
+                          title={m.label}
+                        />
+                      </div>
+                    );
+                  })()}
+
                   {/* WBS */}
-                  <div className="shrink-0 text-[11px] text-zinc-400 font-mono px-1 overflow-hidden truncate" style={{ width: COL.wbs }}>{wbs}</div>
+                  {!lookaheadStyle && (
+                    <div className="shrink-0 text-[11px] text-zinc-400 font-mono px-1 overflow-hidden truncate" style={{ width: COL.wbs }}>{wbs}</div>
+                  )}
 
                   {/* Name */}
                   <div className="shrink-0 flex items-center overflow-hidden pr-1" style={{ width: COL.name, paddingLeft: 8 + lvl * 14 }}>
@@ -1391,7 +1524,47 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                     )}
                   </div>
 
+                  {/* Who — champion first, then support. Replaces the two text
+                      columns in lookahead style; names live in the tooltip. */}
+                  {lookaheadStyle && (() => {
+                    const champ = task.champion_id ? memberMap.get(task.champion_id) : undefined;
+                    const supps = suppIds.map(id => memberMap.get(id)).filter((p): p is Profile => !!p);
+                    const shown = [...(champ ? [champ] : []), ...supps];
+                    const names = [
+                      ...(champ ? [`${champ.full_name || champ.email} (champion)`] : []),
+                      ...supps.map(p => p.full_name || p.email),
+                    ];
+                    return (
+                      <div
+                        className="shrink-0 flex items-center px-1.5"
+                        style={{ width: COL.who }}
+                        title={names.length ? names.join("\n") : "Nobody assigned"}>
+                        {shown.length === 0 ? (
+                          <span className="text-[11px] text-amber-600">Unassigned</span>
+                        ) : (
+                          <span className="flex items-center">
+                            {shown.slice(0, 3).map((p, i) => (
+                              <span
+                                key={p.id}
+                                className="grid h-[19px] w-[19px] place-items-center rounded-full border-[1.5px] border-white text-[8px] font-bold text-white"
+                                style={{
+                                  backgroundColor: champColorMap.get(p.id) ?? "#94A3B8",
+                                  marginLeft: i === 0 ? 0 : -5,
+                                }}>
+                                {initials(p)}
+                              </span>
+                            ))}
+                            {shown.length > 3 && (
+                              <span className="ml-1.5 font-mono text-[9px] text-zinc-400">+{shown.length - 3}</span>
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {/* Predecessors */}
+                  {!lookaheadStyle && (
                   <div className="shrink-0 flex items-center justify-center" style={{ width: COL.pred }}>
                     {isEP ? (
                       <input autoFocus className="w-full rounded border border-[#2E6EA6] px-1 text-xs outline-none"
@@ -1408,8 +1581,10 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                       </span>
                     )}
                   </div>
+                  )}
 
                   {/* Lag */}
+                  {!lookaheadStyle && (
                   <div className="shrink-0 flex items-center justify-center" style={{ width: COL.lag }}>
                     {isEL ? (
                       <input autoFocus type="number"
@@ -1427,9 +1602,10 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                       </span>
                     )}
                   </div>
+                  )}
 
                   {/* Champion — hidden for summary tasks */}
-                  {!hideChampionCol && (
+                  {!lookaheadStyle && !hideChampionCol && (
                   <div className="shrink-0 flex items-center px-1" style={{ width: COL.champ }}>
                     {hasKids ? (
                       <span className="text-[11px] text-zinc-300">—</span>
@@ -1450,7 +1626,7 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                   )}
 
                   {/* Support — hidden for summary tasks */}
-                  {!hideSupportCol && (
+                  {!lookaheadStyle && !hideSupportCol && (
                   <div className="shrink-0 flex items-center gap-1 px-1 overflow-hidden" style={{ width: COL.supp }}>
                     {!hasKids && suppIds.slice(0, 3).map(uid => {
                       const p = memberMap.get(uid);
@@ -1479,7 +1655,9 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                   </div>
                   )}
 
-                  {/* Sat checkbox */}
+                  {/* Sat / Sun checkboxes — replaced by weekend shading on the bar
+                      in lookahead style, so both collapse together. */}
+                  {!lookaheadStyle && (<>
                   <div className="shrink-0 flex items-center justify-center" style={{ width: COL.sat }}>
                     <input type="checkbox"
                       checked={workSat}
@@ -1498,6 +1676,7 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
                       className="cursor-pointer accent-[#2A6B35]"
                       title="Sunday counts as a working day for this task" />
                   </div>
+                  </>)}
 
                   {/* Role/Trade (from the Pull Plan roles list) */}
                   <div className="shrink-0 flex items-center px-1 overflow-hidden" style={{ width: COL.sub }}>
@@ -1705,6 +1884,23 @@ ${hideLegendOnPrint ? "" : `<!-- ── LEGEND ── -->
           })()}
         </div>
       </div>
+
+      {/* ── READINESS KEY ──
+          Spelled out rather than left to colour intuition, and explicit that
+          "ready" is not a materials/approvals confirmation. */}
+      {lookaheadStyle && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg bg-white px-3 py-2 text-[11px] text-zinc-500 shadow-sm">
+          {(["ready", "progress", "unowned", "late", "blocked", "done", "na"] as const).map(k => (
+            <span key={k} className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: READY_META[k].color }} />
+              {READY_META[k].label}
+            </span>
+          ))}
+          <span className="ml-auto text-[10px] italic text-zinc-400">
+            “Ready” = owned, dated, not overdue. It does not confirm materials or approvals.
+          </span>
+        </div>
+      )}
 
       {/* ── TOOLBAR ── */}
       <div className="flex items-center gap-3 flex-wrap">

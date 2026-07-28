@@ -96,6 +96,7 @@ export default async function LookaheadPage() {
           fixedEnd={weekEnd}
           hideCrewCol
           hideDtcCol
+          lookaheadStyle
           championBadge
           hideLegendOnPrint
         />
