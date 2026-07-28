@@ -1,57 +1,99 @@
 "use client";
 
 import { useMemo, useOptimistic, useState } from "react";
-import type { Task, TaskStatus } from "@/lib/supabase/types";
+import type { TaskStatus } from "@/lib/supabase/types";
 import { useTaskSync } from "@/lib/useTaskSync";
+import { avatarColor, initials } from "@/lib/people";
+import { formatShortDate } from "@/lib/date";
 import StatusButtons, { STATUS_LABELS, STATUS_STYLES } from "./StatusButtons";
 
-interface EnrichedTask extends Task {
-  championName: string | null;
-  assigneeName: string | null;
-  supportNames: string[];
+interface Person {
+  id: string;
+  name: string;
+  org: string | null;
+}
+
+export interface AllTask {
+  id: string;
+  title: string;
+  start_date: string;
+  end_date: string;
+  status: TaskStatus;
+  is_milestone: boolean;
+  work_sat: boolean;
+  work_sun: boolean;
+  subcontractor: string | null;
+  ownerId: string | null;
+  ownerRole: "champion" | "assignee" | null;
+  counterpartId: string | null;
+  supporterIds: string[];
   parentTitle: string | null;
   daysUntilEnd: number;
   canEdit: boolean;
 }
 
 interface Props {
-  tasks: EnrichedTask[];
-  people: string[];
+  tasks: AllTask[];
+  people: Person[];
+  directory: Record<string, Person>;
+  currentUserId: string;
 }
 
-function urgencyStyle(days: number, status: TaskStatus) {
-  if (status === "done") return "border-l-4 border-green-300";
-  if (days <= 1) return "border-l-4 border-red-400 bg-red-50";
-  if (days <= 5) return "border-l-4 border-amber-400 bg-amber-50";
-  return "border-l-4 border-zinc-200";
+const UNASSIGNED = "__unassigned__";
+
+type Urgency = "done" | "late" | "soon" | "near" | "calm";
+
+function urgencyOf(t: AllTask): Urgency {
+  if (t.status === "done") return "done";
+  if (t.daysUntilEnd < 0) return "late";
+  if (t.daysUntilEnd <= 1) return "soon";
+  if (t.daysUntilEnd <= 5) return "near";
+  return "calm";
 }
 
-function urgencyBadge(days: number, status: TaskStatus) {
-  if (status === "done") return null;
-  if (days < 0) return <span className="text-xs font-semibold text-red-600">{Math.abs(days)}d overdue</span>;
-  if (days === 0) return <span className="text-xs font-semibold text-red-600">Due today</span>;
-  if (days === 1) return <span className="text-xs font-semibold text-red-600">Due tomorrow</span>;
-  if (days <= 5) return <span className="text-xs font-semibold text-amber-600">Due in {days}d</span>;
-  return null;
+const DOT: Record<Urgency, string> = {
+  done: "bg-green-600",
+  late: "bg-red-500",
+  soon: "bg-red-500",
+  near: "bg-amber-500",
+  calm: "bg-zinc-300",
+};
+
+function dueLabel(t: AllTask) {
+  const d = t.daysUntilEnd;
+  const on = formatShortDate(t.end_date);
+  if (t.status === "done") return { text: `Closed ${on}`, tone: "text-zinc-400" };
+  if (d < 0) return { text: `${Math.abs(d)}d overdue · was ${on}`, tone: "text-red-600 font-semibold" };
+  if (d === 0) return { text: "Due today", tone: "text-red-600 font-semibold" };
+  if (d === 1) return { text: "Due tomorrow", tone: "text-red-600 font-semibold" };
+  if (d <= 5) return { text: `Due in ${d}d · ${on}`, tone: "text-amber-600 font-semibold" };
+  return { text: `Due in ${d}d · ${on}`, tone: "text-zinc-400" };
 }
 
-function taskPeople(task: EnrichedTask): string[] {
-  return [task.championName, task.assigneeName, ...task.supportNames].filter((n): n is string => !!n);
+function Avatar({ person, size = 22 }: { person: Person; size?: number }) {
+  return (
+    <span
+      title={person.org ? `${person.name} — ${person.org}` : person.name}
+      style={{ background: avatarColor(person.id), width: size, height: size }}
+      className="inline-grid place-items-center rounded-full text-[9px] font-bold text-white shrink-0"
+    >
+      {initials(person.name)}
+    </span>
+  );
 }
 
-export default function AllTasksView({ tasks: serverTasks, people }: Props) {
+export default function AllTasksView({ tasks: serverTasks, people, directory, currentUserId }: Props) {
   useTaskSync();
 
-  // Server data is the source of truth. useOptimistic layers the in-flight status
-  // flip on top and discards it once fresh props arrive — so a change made on My
-  // Tasks (or by a teammate) always wins over a local guess.
+  // Server data is the source of truth. useOptimistic layers the in-flight flip
+  // on top and drops it once fresh props arrive — so a change made on My Tasks
+  // (or by a teammate) always wins over a local guess.
   const [tasks, setOptimisticStatus] = useOptimistic(
     serverTasks,
     (current, patch: { id: string; status: TaskStatus }) =>
       current.map(t => (t.id === patch.id ? { ...t, status: patch.status } : t))
   );
 
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [personFilter, setPersonFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"active" | "done" | "all">("active");
   const [search, setSearch] = useState("");
@@ -59,128 +101,170 @@ export default function AllTasksView({ tasks: serverTasks, people }: Props) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return tasks.filter(t => {
-      if (personFilter !== "all" && !taskPeople(t).includes(personFilter)) return false;
+      if (personFilter === "mine") {
+        const involved =
+          t.ownerId === currentUserId ||
+          t.counterpartId === currentUserId ||
+          t.supporterIds.includes(currentUserId);
+        if (!involved) return false;
+      } else if (personFilter !== "all") {
+        const involved =
+          t.ownerId === personFilter ||
+          t.counterpartId === personFilter ||
+          t.supporterIds.includes(personFilter);
+        if (!involved) return false;
+      }
       if (statusFilter === "active" && t.status === "done") return false;
       if (statusFilter === "done" && t.status !== "done") return false;
       if (q && !t.title.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [tasks, personFilter, statusFilter, search]);
+  }, [tasks, personFilter, statusFilter, search, currentUserId]);
 
-  const sorted = useMemo(
-    () => [...filtered].sort((a, b) => a.daysUntilEnd - b.daysUntilEnd),
-    [filtered]
-  );
+  const groups = useMemo(() => {
+    const byOwner = new Map<string, AllTask[]>();
+    for (const t of filtered) {
+      const key = t.ownerId ?? UNASSIGNED;
+      const list = byOwner.get(key) ?? [];
+      list.push(t);
+      byOwner.set(key, list);
+    }
 
-  function renderTask(task: EnrichedTask) {
-    const expanded = expandedId === task.id;
-    const badge = urgencyBadge(task.daysUntilEnd, task.status);
+    const built = [...byOwner.entries()].map(([key, list]) => {
+      const sorted = [...list].sort((a, b) => {
+        // Done sinks; otherwise soonest deadline first.
+        if ((a.status === "done") !== (b.status === "done")) return a.status === "done" ? 1 : -1;
+        return a.daysUntilEnd - b.daysUntilEnd;
+      });
+      const active = sorted.filter(t => t.status !== "done");
+      return {
+        key,
+        person: key === UNASSIGNED ? null : directory[key] ?? null,
+        tasks: sorted,
+        activeCount: active.length,
+        lateCount: active.filter(t => t.daysUntilEnd < 0).length,
+      };
+    });
+
+    // Whoever is most on the hook floats up; unassigned work sinks to the
+    // bottom, where it reads as the loose end it is.
+    return built.sort((a, b) => {
+      if ((a.key === UNASSIGNED) !== (b.key === UNASSIGNED)) return a.key === UNASSIGNED ? 1 : -1;
+      if (b.lateCount !== a.lateCount) return b.lateCount - a.lateCount;
+      if (b.activeCount !== a.activeCount) return b.activeCount - a.activeCount;
+      return (a.person?.name ?? "").localeCompare(b.person?.name ?? "");
+    });
+  }, [filtered, directory]);
+
+  function renderCard(task: AllTask) {
+    const urgency = urgencyOf(task);
+    const due = dueLabel(task);
+    const counterpart = task.counterpartId ? directory[task.counterpartId] : null;
+    const supporters = task.supporterIds.map(id => directory[id]).filter(Boolean);
 
     return (
-      <div key={task.id} className={`rounded-lg bg-white shadow-sm ${urgencyStyle(task.daysUntilEnd, task.status)}`}>
-        <button
-          className="w-full text-left px-4 py-3 flex items-start gap-3"
-          onClick={() => setExpandedId(expanded ? null : task.id)}
-        >
-          <span className="mt-0.5 text-zinc-400 text-xs w-4 shrink-0">{expanded ? "▼" : "▶"}</span>
-          <div className="flex-1 min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium text-[#1A3560] text-sm leading-snug">{task.title}</span>
-              {task.is_milestone && (
-                <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-semibold">Milestone</span>
-              )}
-              {badge}
-            </div>
-            {task.parentTitle && (
-              <p className="text-[11px] text-zinc-400 mt-0.5">Under: {task.parentTitle}</p>
-            )}
-            <div className="flex flex-wrap gap-3 mt-1 text-[11px] text-zinc-500">
-              <span>Start: <span className="font-mono">{task.start_date}</span></span>
-              <span>End: <span className="font-mono">{task.end_date}</span></span>
-              {!task.is_milestone && <span>{task.daysUntilEnd < 0 ? `${Math.abs(task.daysUntilEnd)}d past` : `${task.daysUntilEnd}d remaining`}</span>}
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5 mt-2">
-              {task.championName && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-purple-100 text-purple-700">
-                  Champion: {task.championName}
-                </span>
-              )}
-              {task.assigneeName && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-blue-100 text-blue-700">
-                  Assignee: {task.assigneeName}
-                </span>
-              )}
-              {task.supportNames.length > 0 && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-zinc-100 text-zinc-600">
-                  Support: {task.supportNames.join(", ")}
-                </span>
-              )}
-              {!task.championName && !task.assigneeName && task.supportNames.length === 0 && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-red-100 text-red-600">
-                  Unassigned
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="shrink-0">
-            <span className={`text-[10px] px-2 py-1 rounded-full font-semibold ${STATUS_STYLES[task.status]}`}>
-              {STATUS_LABELS[task.status]}
+      <article
+        key={task.id}
+        className={`flex flex-col gap-2.5 rounded-xl bg-white p-4 shadow-sm transition-shadow hover:shadow-md ${
+          task.status === "done" ? "opacity-70" : ""
+        }`}
+      >
+        <div className="flex items-start gap-2.5">
+          <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${DOT[urgency]}`} />
+          <h4 className="flex-1 text-[13.5px] font-semibold leading-snug text-[#1A3560]">
+            {task.title}
+          </h4>
+          {task.is_milestone && (
+            <span className="shrink-0 rounded border border-amber-500 px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-amber-600">
+              Milestone
             </span>
-          </div>
-        </button>
+          )}
+        </div>
 
-        {expanded && (
-          <div className="px-4 pb-4 border-t border-zinc-100 pt-3 space-y-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="text-xs font-semibold text-zinc-500 w-14 shrink-0">Status</label>
-              <StatusButtons
-                taskId={task.id}
-                status={task.status}
-                canEdit={task.canEdit}
-                onOptimistic={s => setOptimisticStatus({ id: task.id, status: s })}
-              />
-            </div>
+        {task.parentTitle && (
+          <p className="-mt-1 text-[11px] text-zinc-400">Under: {task.parentTitle}</p>
+        )}
 
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-zinc-500 border-t border-zinc-100 pt-3">
-              <span><span className="font-semibold">Start:</span> {task.start_date}</span>
-              <span><span className="font-semibold">Finish:</span> {task.end_date}</span>
-              {!task.is_milestone && (
-                <span><span className="font-semibold">Duration:</span> {Math.abs(task.daysUntilEnd)}d remaining</span>
-              )}
-              <span><span className="font-semibold">Works Sat/Sun:</span> {task.work_sat ? "✓" : "—"} / {task.work_sun ? "✓" : "—"}</span>
-            </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-zinc-500">
+          <span className={`font-mono tabular-nums ${due.tone}`}>{due.text}</span>
+          <span className="font-mono tabular-nums text-zinc-400">
+            {formatShortDate(task.start_date)} → {formatShortDate(task.end_date)}
+          </span>
+        </div>
+
+        {(counterpart || supporters.length > 0 || task.subcontractor) && (
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+            {counterpart && (
+              <span className="inline-flex items-center gap-1.5">
+                <Avatar person={counterpart} size={18} />
+                {counterpart.name}
+                <span className="text-zinc-400">· assignee</span>
+              </span>
+            )}
+            {supporters.length > 0 && (
+              <span className="inline-flex items-center gap-1">
+                {supporters.map(p => <Avatar key={p.id} person={p} size={18} />)}
+                <span className="ml-0.5 text-zinc-400">
+                  support{supporters.length > 1 ? ` · ${supporters.length}` : ""}
+                </span>
+              </span>
+            )}
+            {task.subcontractor && (
+              <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600">
+                {task.subcontractor}
+              </span>
+            )}
           </div>
         )}
-      </div>
+
+        <div className="mt-0.5 border-t border-zinc-100 pt-2.5">
+          {task.canEdit ? (
+            <StatusButtons
+              taskId={task.id}
+              status={task.status}
+              canEdit
+              onOptimistic={s => setOptimisticStatus({ id: task.id, status: s })}
+            />
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${STATUS_STYLES[task.status]}`}>
+                {STATUS_LABELS[task.status]}
+              </span>
+              <span className="text-[11px] italic text-zinc-400">View only</span>
+            </div>
+          )}
+        </div>
+      </article>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3 rounded-lg bg-white shadow-sm px-4 py-3">
-        <div className="flex items-center gap-2">
-          <label className="text-xs font-semibold text-zinc-500">Person</label>
-          <select
-            value={personFilter}
-            onChange={e => setPersonFilter(e.target.value)}
-            className="text-sm rounded border border-zinc-200 px-2 py-1 text-zinc-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
-          >
-            <option value="all">Everyone</option>
-            {people.map(p => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-        </div>
+    <div className="flex flex-col gap-5">
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-3 rounded-xl bg-white px-4 py-3 shadow-sm">
+        <select
+          value={personFilter}
+          onChange={e => setPersonFilter(e.target.value)}
+          className="rounded border border-zinc-200 px-2 py-1.5 text-sm text-zinc-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+        >
+          <option value="all">Everyone</option>
+          <option value="mine">Just me</option>
+          {people.map(p => (
+            <option key={p.id} value={p.id}>
+              {p.name}{p.org ? ` — ${p.org}` : ""}
+            </option>
+          ))}
+        </select>
 
         <div className="flex items-center gap-1">
           {(["active", "done", "all"] as const).map(s => (
             <button
               key={s}
               onClick={() => setStatusFilter(s)}
-              className={`text-xs px-3 py-1 rounded-full font-medium border transition-colors ${
+              className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                 statusFilter === s
-                  ? "bg-[#1A3560] text-white border-transparent"
-                  : "bg-white text-zinc-500 border-zinc-200 hover:border-zinc-400"
+                  ? "border-transparent bg-[#1A3560] text-white"
+                  : "border-zinc-200 bg-white text-zinc-500 hover:border-zinc-400"
               }`}
             >
               {s === "active" ? "Active" : s === "done" ? "Done" : "All"}
@@ -193,16 +277,46 @@ export default function AllTasksView({ tasks: serverTasks, people }: Props) {
           placeholder="Search tasks…"
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="ml-auto text-sm rounded border border-zinc-200 px-3 py-1.5 text-zinc-700 focus:outline-none focus:ring-2 focus:ring-blue-400 w-48"
+          className="ml-auto w-48 rounded border border-zinc-200 px-3 py-1.5 text-sm text-zinc-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
         />
 
-        <span className="text-xs text-zinc-400">{sorted.length} task{sorted.length === 1 ? "" : "s"}</span>
+        <span className="font-mono text-xs tabular-nums text-zinc-400">
+          {filtered.length} task{filtered.length === 1 ? "" : "s"} · {groups.length} {groups.length === 1 ? "person" : "people"}
+        </span>
       </div>
 
-      {sorted.length === 0 ? (
-        <p className="text-sm text-zinc-400 italic px-1">No tasks match these filters.</p>
+      {groups.length === 0 ? (
+        <p className="px-1 text-sm italic text-zinc-400">No tasks match these filters.</p>
       ) : (
-        <div className="space-y-2">{sorted.map(renderTask)}</div>
+        groups.map(group => (
+          <section key={group.key} className="flex flex-col gap-2.5">
+            <header className="flex items-center gap-2.5 rounded-lg bg-[#1A3560] px-3 py-2 text-white">
+              {group.person ? (
+                <Avatar person={group.person} />
+              ) : (
+                <span className="inline-grid h-[22px] w-[22px] place-items-center rounded-full bg-red-500 text-[11px] font-bold">
+                  !
+                </span>
+              )}
+              <span className="text-[13px] font-semibold">
+                {group.person?.name ?? "Unassigned"}
+              </span>
+              {group.person?.org && (
+                <span className="text-[11px] text-blue-200">{group.person.org}</span>
+              )}
+              <span className="ml-auto font-mono text-[10.5px] uppercase tracking-wider text-blue-200">
+                {group.activeCount} active
+                {group.lateCount > 0 && (
+                  <span className="font-bold text-red-300"> · {group.lateCount} late</span>
+                )}
+              </span>
+            </header>
+
+            <div className="grid grid-cols-1 items-start gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+              {group.tasks.map(renderCard)}
+            </div>
+          </section>
+        ))
       )}
     </div>
   );

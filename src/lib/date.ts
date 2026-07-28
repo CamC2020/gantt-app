@@ -30,6 +30,16 @@ export function todayISO(): string {
   return formatISODate(new Date());
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "2026-07-30" → "Jul 30". Dates are the most-scanned value on the task pages,
+// and a crew reads a month name faster than an ISO string. The year is dropped
+// because the lookahead only ever spans six weeks.
+export function formatShortDate(value: string): string {
+  const d = parseISODate(value);
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+}
+
 export function isWorkingDay(date: string, workSat: boolean, workSun: boolean, holidays: Set<string>): boolean {
   if (holidays.has(date)) return false;
   const dow = parseISODate(date).getDay();
