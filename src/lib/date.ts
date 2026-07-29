@@ -30,6 +30,26 @@ export function todayISO(): string {
   return formatISODate(new Date());
 }
 
+// Monday of the week containing `value`. Weeks run Mon–Sun on this project.
+export function mondayOf(value: string): string {
+  const d = parseISODate(value);
+  const dow = d.getDay(); // 0 = Sun
+  return addDays(value, dow === 0 ? -6 : 1 - dow);
+}
+
+// ISO-8601 week number. Crews and the Village both talk in week numbers
+// ("what's in week 32?"), so the Lookahead bands by this rather than by date.
+export function isoWeek(value: string): number {
+  const d = parseISODate(value);
+  // Shift to the Thursday of this week — ISO weeks are defined by which year
+  // that Thursday falls in, which is what makes the year boundary behave.
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  target.setDate(target.getDate() - ((target.getDay() + 6) % 7) + 3);
+  const firstThursday = new Date(target.getFullYear(), 0, 4);
+  firstThursday.setDate(firstThursday.getDate() - ((firstThursday.getDay() + 6) % 7) + 3);
+  return 1 + Math.round((target.getTime() - firstThursday.getTime()) / (7 * 86400000));
+}
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // "2026-07-30" → "Jul 30". Dates are the most-scanned value on the task pages,

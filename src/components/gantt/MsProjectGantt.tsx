@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { addDays, diffInDays, parseISODate, todayISO, countWorkingDays, addWorkingDays, nextWorkingDay } from "@/lib/date";
+import { addDays, diffInDays, parseISODate, todayISO, countWorkingDays, addWorkingDays, nextWorkingDay, mondayOf, isoWeek, formatShortDate } from "@/lib/date";
 import type { Profile, Task, TaskDependency, TaskSupport, StatHoliday, PullRole } from "@/lib/supabase/types";
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
@@ -12,6 +12,7 @@ const BASE_DAY_W = 28;
 const ZOOM_MIN = 0.07; // ~2px/day — enough to fit a full year on screen
 const ZOOM_MAX = 3;
 const ROW_H = 36;
+const BAND_H = 26;   // lookahead week-band row
 const HEADER_H = 54; // month row (24px) + day row (28px) + 2px border
 const MIN_NAME_W = 160;
 const MAX_NAME_W = 460;
@@ -268,6 +269,55 @@ export default function MsProjectGantt({
   const wbsMap       = useMemo(() => computeWBS(cm), [cm]);
   const wbsToTask    = useMemo(() => { const m = new Map<string, Task>(); wbsMap.forEach((w, id) => { const t = taskMap.get(id); if (t) m.set(w, t); }); return m; }, [wbsMap, taskMap]);
   const flat         = useMemo(() => flatVisible(cm, expanded), [cm, expanded]);
+
+  // Lookahead rows read in date order so the week bands mean something — the
+  // exported lookahead is a flat list, so no hierarchy is being flattened here.
+  const rowsFlat = useMemo(() => {
+    if (!lookaheadStyle) return flat;
+    return [...flat].sort((a, b) =>
+      a.start_date.localeCompare(b.start_date) ||
+      a.end_date.localeCompare(b.end_date) ||
+      a.title.localeCompare(b.title));
+  }, [flat, lookaheadStyle]);
+
+  // Which task each week band should be drawn above, plus that week's tallies.
+  const bandBefore = useMemo(() => {
+    const m = new Map<string, { week: number; monday: string; total: number; constraints: number }>();
+    if (!lookaheadStyle) return m;
+
+    const tally = new Map<string, { total: number; constraints: number }>();
+    for (const t of rowsFlat) {
+      const monday = mondayOf(t.start_date);
+      const e = tally.get(monday) ?? { total: 0, constraints: 0 };
+      e.total++;
+      if (t.is_constraint) e.constraints++;
+      tally.set(monday, e);
+    }
+
+    let last = "";
+    for (const t of rowsFlat) {
+      const monday = mondayOf(t.start_date);
+      if (monday !== last) {
+        last = monday;
+        m.set(t.id, { week: isoWeek(monday), monday, ...tally.get(monday)! });
+      }
+    }
+    return m;
+  }, [rowsFlat, lookaheadStyle]);
+
+  // Pixel top of every rendered row. Dependency arrows are absolutely positioned
+  // over the chart, so once week bands push rows down they can no longer assume
+  // `index * ROW_H` — that would land every arrow a band-height too high.
+  const rowGeom = useMemo(() => {
+    const tops = new Map<string, number>();
+    let y = 0;
+    for (const t of rowsFlat) {
+      if (bandBefore.has(t.id)) y += BAND_H;
+      tops.set(t.id, y);
+      y += ROW_H;
+    }
+    return { tops, height: y };
+  }, [rowsFlat, bandBefore]);
   const memberMap    = useMemo(() => new Map(members.map(p => [p.id, p])), [members]);
   const champColorMap = useMemo(() => buildChampionColorMap(members), [members]);
   const holidaySet   = useMemo(() => new Set(holidays.map(h => h.date)), [holidays]);
@@ -341,6 +391,21 @@ export default function MsProjectGantt({
       if (monday !== last) {
         last = monday;
         out.push({ offset: i, count: 1, label: parseISODate(monday).toLocaleDateString(undefined, { month: "short", day: "numeric" }) });
+      } else out[out.length - 1].count++;
+    });
+    return out;
+  }, [days]);
+
+  // Week bands across the top of the chart. A six-week lookahead is discussed
+  // in week numbers — "what's in 32?" — so those replace the month strip.
+  const weekBands = useMemo(() => {
+    const out: { offset: number; count: number; week: number; monday: string }[] = [];
+    let last = "";
+    days.forEach((d, i) => {
+      const monday = mondayOf(d.date);
+      if (monday !== last) {
+        last = monday;
+        out.push({ offset: i, count: 1, week: isoWeek(monday), monday });
       } else out[out.length - 1].count++;
     });
     return out;
@@ -823,6 +888,47 @@ export default function MsProjectGantt({
       : flatAll(cm);
     if (!all.length) return;
 
+    // The printed row order has to match the screen exactly, week bands and all,
+    // or the A3 stops being the same document you just reviewed. Bands occupy a
+    // full row height so the chart SVG stays aligned by simple index maths.
+    type PItem =
+      | { kind: "band"; week: number; monday: string; total: number; constraints: number }
+      | { kind: "task"; task: Task };
+
+    const pOrdered = lookaheadStyle
+      ? [...all].sort((a, b) =>
+          a.start_date.localeCompare(b.start_date) ||
+          a.end_date.localeCompare(b.end_date) ||
+          a.title.localeCompare(b.title))
+      : all;
+
+    const pItems: PItem[] = [];
+    if (lookaheadStyle) {
+      const tally = new Map<string, { total: number; constraints: number }>();
+      for (const t of pOrdered) {
+        const mon = mondayOf(t.start_date);
+        const e = tally.get(mon) ?? { total: 0, constraints: 0 };
+        e.total++;
+        if (t.is_constraint) e.constraints++;
+        tally.set(mon, e);
+      }
+      let lastMon = "";
+      for (const t of pOrdered) {
+        const mon = mondayOf(t.start_date);
+        if (mon !== lastMon) {
+          lastMon = mon;
+          pItems.push({ kind: "band", week: isoWeek(mon), monday: mon, ...tally.get(mon)! });
+        }
+        pItems.push({ kind: "task", task: t });
+      }
+    } else {
+      for (const t of pOrdered) pItems.push({ kind: "task", task: t });
+    }
+
+    const pIdx = new Map<string, number>();
+    pItems.forEach((it, i) => { if (it.kind === "task") pIdx.set(it.task.id, i); });
+    const pRows = pItems.length;
+
     // Date range: the locked window if set, else tight around the tasks.
     const pStart = fixedStart ?? all.reduce((s, t) => t.start_date < s ? t.start_date : s, all[0].start_date);
     const pEnd   = fixedEnd   ?? all.reduce((s, t) => t.end_date   > s ? t.end_date   : s, all[0].end_date);
@@ -925,21 +1031,23 @@ export default function MsProjectGantt({
     let bgSVG = "";
     for (let i = 0; i < pDays; i++) {
       const dow = parseISODate(addDays(pStart, i)).getDay();
-      if (dow === 0 || dow === 6) bgSVG += `<rect x="${i * D}" y="0" width="${D}" height="${all.length * R}" fill="rgba(0,0,0,0.04)"/>`;
+      if (dow === 0 || dow === 6) bgSVG += `<rect x="${i * D}" y="0" width="${D}" height="${pRows * R}" fill="rgba(0,0,0,0.04)"/>`;
     }
 
     // Month border lines on grid
     months.forEach(m => {
-      bgSVG += `<line x1="${m.offset * D}" y1="0" x2="${m.offset * D}" y2="${all.length * R}" stroke="#cbd5e1" stroke-width="1.5"/>`;
+      bgSVG += `<line x1="${m.offset * D}" y1="0" x2="${m.offset * D}" y2="${pRows * R}" stroke="#cbd5e1" stroke-width="1.5"/>`;
     });
 
     // Today line
     const todayOff = diffInDays(pStart, todayISO());
-    if (todayOff >= 0 && todayOff <= pDays) bgSVG += `<line x1="${todayOff * D}" y1="0" x2="${todayOff * D}" y2="${all.length * R}" stroke="#f87171" stroke-width="1" stroke-dasharray="3,2"/>`;
+    if (todayOff >= 0 && todayOff <= pDays) bgSVG += `<line x1="${todayOff * D}" y1="0" x2="${todayOff * D}" y2="${pRows * R}" stroke="#f87171" stroke-width="1" stroke-dasharray="3,2"/>`;
 
     // Bars
     let barsSVG = "";
-    all.forEach((task, idx) => {
+    pItems.forEach((item, idx) => {
+      if (item.kind !== "task") return;   // band rows draw no bar
+      const task = item.task;
       const hasKids = (cm.get(task.id) ?? []).length > 0;
       const isCon = task.is_constraint ?? false;
       const isMile = (task.is_milestone ?? false) && !isCon;
@@ -973,16 +1081,19 @@ export default function MsProjectGantt({
     });
 
     // Horizontal row lines
-    for (let i = 1; i < all.length; i++) barsSVG += `<line x1="0" y1="${i * R}" x2="${pDays * D}" y2="${i * R}" stroke="#f1f5f9" stroke-width="0.5"/>`;
+    for (let i = 1; i < pRows; i++) barsSVG += `<line x1="0" y1="${i * R}" x2="${pDays * D}" y2="${i * R}" stroke="#f1f5f9" stroke-width="0.5"/>`;
 
     // Dependency arrows
-    const idxMap = new Map(all.map((t, i) => [t.id, i]));
+    // Indices come from pItems so arrows still land on their rows once week
+    // bands are interleaved.
     let arrowsSVG = `<defs><marker id="ph" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L5,3 L0,6 Z" fill="#94a3b8"/></marker></defs>`;
     for (const dep of deps) {
-      const predIdx = idxMap.get(dep.predecessor_id);
-      const succIdx = idxMap.get(dep.task_id);
+      const predIdx = pIdx.get(dep.predecessor_id);
+      const succIdx = pIdx.get(dep.task_id);
       if (predIdx === undefined || succIdx === undefined) continue;
-      const predTask = all[predIdx], succTask = all[succIdx];
+      const predItem = pItems[predIdx], succItem = pItems[succIdx];
+      if (predItem.kind !== "task" || succItem.kind !== "task") continue;
+      const predTask = predItem.task, succTask = succItem.task;
       const predHasKids = (cm.get(predTask.id) ?? []).length > 0;
       const succHasKids = (cm.get(succTask.id) ?? []).length > 0;
       const x1 = (diffInDays(pStart, predTask.end_date) + 1) * D;
@@ -1004,7 +1115,18 @@ export default function MsProjectGantt({
 
     // Table rows
     let tableRows = "";
-    all.forEach((task, idx) => {
+    pItems.forEach((item) => {
+      if (item.kind === "band") {
+        tableRows += `<tr style="height:${R}px;background:#eef2f7">
+          <td colspan="${pCols.length}" style="padding:0 6px;border-bottom:1px solid #cbd5e1">
+            <span style="font-family:monospace;font-size:8.5px;font-weight:700;letter-spacing:0.11em;color:#1A3560">WEEK ${item.week}</span>
+            <span style="font-family:monospace;font-size:8.5px;color:#64748b;margin-left:7px">${formatShortDate(item.monday)} – ${formatShortDate(addDays(item.monday, 6))}</span>
+            <span style="font-family:monospace;font-size:8.5px;color:#94a3b8;margin-left:7px">${item.total} ${item.total === 1 ? "activity" : "activities"}${item.constraints > 0 ? ` · <span style="color:#dc2626;font-weight:700">${item.constraints} constraint${item.constraints === 1 ? "" : "s"}</span>` : ""}</span>
+          </td>
+        </tr>`;
+        return;
+      }
+      const task = item.task;
       const wbs = wbsMap.get(task.id) ?? "";
       const lvl = depth(task, taskMap);
       const hasKids = (cm.get(task.id) ?? []).length > 0;
@@ -1019,7 +1141,7 @@ export default function MsProjectGantt({
         if (c.label === "Days") {
           return `<td style="padding:0 4px;font-size:9px;text-align:center;color:${durColor};font-weight:${isCon ? 700 : 400}">${durLabel}</td>`;
         }
-        if (c.label === "Task Name") {
+        if (c.label === "Task Name" || c.label === "Activity") {
           return `<td style="padding:0 4px;padding-left:${6 + lvl * 10}px;font-size:10px;font-weight:${hasKids ? 600 : 400};overflow:hidden;max-width:${c.w}px;white-space:nowrap">${task.title}</td>`;
         }
         if (c.label === "#") {
@@ -1248,7 +1370,10 @@ ${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
       {/* ── MAIN GRID ── */}
       <div
         ref={scrollBoxRef}
-        className={`relative ${fixedDays ? "overflow-x-hidden" : "overflow-x-auto"} overflow-y-auto rounded-lg border border-zinc-300 bg-white`}
+        className={`relative ${fixedDays ? "overflow-x-hidden" : "overflow-x-auto"} overflow-y-auto rounded-xl bg-white ${
+          // Fluent-style: depth carries the hierarchy, not a hard outline.
+          lookaheadStyle ? "shadow-sm ring-1 ring-zinc-200" : "border border-zinc-300"
+        }`}
         style={{ maxHeight: "70vh" }}
         onPointerMove={e => {
           if (resizingRef.current) {
@@ -1316,13 +1441,29 @@ ${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
             />
             <div className="flex flex-col bg-zinc-50 shrink-0" style={{ width: chartW }}>
               <div className="relative h-6 border-b border-zinc-200">
-                {monthLabels.map(m => (
-                  <div key={`${m.offset}${m.label}`}
-                    className="absolute top-0 h-6 flex items-center justify-center border-l-2 border-zinc-300 overflow-hidden"
-                    style={{ left: m.offset * DAY_W, width: m.count * DAY_W }}>
-                    <span className="text-[11px] font-semibold text-[#1A3560] px-1 truncate">{m.label}</span>
-                  </div>
-                ))}
+                {(lookaheadStyle ? weekBands : monthLabels).map(b => {
+                  const isWeek = "week" in b;
+                  return (
+                    <div key={isWeek ? b.monday : `${b.offset}${(b as { label: string }).label}`}
+                      className="absolute top-0 h-6 flex items-center justify-center gap-1.5 border-l-2 border-zinc-300 overflow-hidden"
+                      style={{ left: b.offset * DAY_W, width: b.count * DAY_W }}>
+                      {isWeek ? (
+                        <>
+                          <span className="px-1 font-mono text-[10px] font-bold tracking-wider text-[#1A3560]">
+                            WK {b.week}
+                          </span>
+                          {b.count > 4 && (
+                            <span className="font-mono text-[9px] text-zinc-400">{formatShortDate(b.monday)}</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="truncate px-1 text-[11px] font-semibold text-[#1A3560]">
+                          {(b as { label: string }).label}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               <div className="flex">
                 {showMonthsOnly ? (
@@ -1352,11 +1493,11 @@ ${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
           </div>
 
           {/* ── ROWS ── */}
-          {!flat.length ? (
+          {!rowsFlat.length ? (
             <div className="flex items-center justify-center py-16 text-sm text-zinc-400">
               No tasks yet — click <strong className="mx-1">+ Add Task</strong> below.
             </div>
-          ) : flat.map(task => {
+          ) : rowsFlat.map(task => {
             const wbs      = wbsMap.get(task.id) ?? "";
             const lvl      = depth(task, taskMap);
             const hasKids  = !!(cm.get(task.id) ?? []).length;
@@ -1396,8 +1537,38 @@ ${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
             const availableForSupport = members.filter(m => m.id !== task.champion_id && !suppIds.includes(m.id));
             const rowBg    = isCon ? CONSTRAINT_BG : isMile ? MILESTONE_BG : LEVEL_BG[Math.min(lvl, LEVEL_BG.length - 1)];
 
+            const band = bandBefore.get(task.id);
+
             return (
-              <div key={task.id}
+              <Fragment key={task.id}>
+
+              {/* ── WEEK BAND ──
+                  Groups the six-week window the way the meeting runs. The left
+                  half is sticky so the week number stays put while the chart
+                  scrolls under it. */}
+              {band && (
+                <div className="flex border-y border-zinc-200 bg-[#eef2f7]" style={{ height: 26 }}>
+                  <div
+                    className="sticky left-0 z-20 flex shrink-0 items-center gap-2.5 border-r border-zinc-200 bg-[#eef2f7] px-3"
+                    style={{ width: leftW }}>
+                    <span className="font-mono text-[10px] font-bold tracking-[0.12em] text-[#1A3560]">
+                      WEEK {band.week}
+                    </span>
+                    <span className="font-mono text-[10px] text-zinc-500">
+                      {formatShortDate(band.monday)} – {formatShortDate(addDays(band.monday, 6))}
+                    </span>
+                    <span className="ml-auto truncate font-mono text-[10px] text-zinc-400">
+                      {band.total} {band.total === 1 ? "activity" : "activities"}
+                      {band.constraints > 0 && (
+                        <span className="font-bold text-red-600"> · {band.constraints} constraint{band.constraints === 1 ? "" : "s"}</span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="shrink-0 bg-[#eef2f7]" style={{ width: chartW }} />
+                </div>
+              )}
+
+              <div
                 className={`group flex border-b border-zinc-100 ${rowOverId === task.id ? "border-t-2 border-t-[#2E6EA6]" : ""} ${rowDragId === task.id ? "opacity-40" : ""}`}
                 style={{ height: ROW_H }}
                 onDragOver={e => { if (!readOnly && rowDragId) { e.preventDefault(); setRowOverId(task.id); } }}
@@ -1828,12 +1999,16 @@ ${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
                   )}
                 </div>
               </div>
+              </Fragment>
             );
           })}
 
           {/* ── DEPENDENCY ARROWS ── */}
-          {flat.length > 0 && (() => {
-            const rowIndex = new Map(flat.map((t, i) => [t.id, i]));
+          {rowsFlat.length > 0 && (() => {
+            // Index and Y both come from the rendered order (rowsFlat), not the
+            // hierarchy order — in lookahead style the two differ.
+            const rowIndex = new Map(rowsFlat.map((t, i) => [t.id, i]));
+            const yOf = (id: string) => (rowGeom.tops.get(id) ?? 0) + ROW_H / 2;
             const STEP = 10;
             const arrows: { key: string; d: string }[] = [];
             for (const dep of deps) {
@@ -1848,9 +2023,9 @@ ${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
               const succHasKids = (cm.get(succ.id) ?? []).length > 0;
               const succBarHalf = succIsMile ? 9 : succHasKids ? 5 : 11;
               const x1 = predIsMile ? dayOff(pred.end_date) * DAY_W + DAY_W / 2 : dayOff(pred.end_date) * DAY_W + DAY_W;
-              const y1 = predRow * ROW_H + ROW_H / 2;
+              const y1 = yOf(dep.predecessor_id);
               const x2 = succIsMile ? dayOff(succ.start_date) * DAY_W + DAY_W / 2 - 10 : dayOff(succ.start_date) * DAY_W;
-              const y2 = succRow * ROW_H + ROW_H / 2;
+              const y2 = yOf(dep.task_id);
               const midX = Math.max(x1 + STEP, x2 - STEP);
 
               let d: string;
@@ -1869,7 +2044,7 @@ ${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
             return (
               <svg
                 className="absolute pointer-events-none z-0"
-                style={{ left: leftW, top: HEADER_H, width: chartW, height: flat.length * ROW_H }}
+                style={{ left: leftW, top: HEADER_H, width: chartW, height: rowGeom.height }}
               >
                 <defs>
                   <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
