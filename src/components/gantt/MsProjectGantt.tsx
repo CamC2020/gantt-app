@@ -13,6 +13,27 @@ const ZOOM_MIN = 0.07; // ~2px/day — enough to fit a full year on screen
 const ZOOM_MAX = 3;
 const ROW_H = 36;
 const BAND_H = 26;   // lookahead week-band row
+
+// Dependency link as a smooth S-curve.
+//
+// Both ends are horizontal — the tangent leaving the predecessor and the one
+// arriving at the successor are flat — so the arrowhead still points squarely
+// into the bar and the direction of the relationship stays obvious. The curve
+// replaces only the right-angle corners the stepped version used.
+//
+// One cubic handles every case. Where the successor starts left of the
+// predecessor's finish, the two control points cross and the curve simply
+// bulges out and back — the usual flowchart back-edge — instead of needing a
+// separate routed branch with its own corner.
+//
+// Reach grows with both the horizontal and vertical gap so short hops stay
+// tight and long drops across several rows open out, and is clamped so neither
+// extreme degenerates.
+function curvedLink(x1: number, y1: number, x2: number, y2: number, sameRow: boolean): string {
+  if (sameRow || Math.abs(y2 - y1) < 1) return `M ${x1} ${y1} L ${x2} ${y2}`;
+  const reach = Math.max(16, Math.min(60, Math.abs(x2 - x1) * 0.5 + Math.abs(y2 - y1) * 0.25));
+  return `M ${x1} ${y1} C ${(x1 + reach).toFixed(1)} ${y1}, ${(x2 - reach).toFixed(1)} ${y2}, ${x2} ${y2}`;
+}
 const HEADER_H = 54; // month row (24px) + day row (28px) + 2px border
 const MIN_NAME_W = 160;
 const MAX_NAME_W = 460;
@@ -996,11 +1017,23 @@ export default function MsProjectGantt({
     const D = fixedStart && fixedEnd
       ? Math.max(2, Math.floor(AVAIL_W / pDays))
       : Math.max(2, Math.min(DAY_W, Math.floor(AVAIL_W / pDays)));
-    const R = 20;
     // Header height: 24px month row + day/week row (20px) when shown, else just month row (24px).
     const pShowDays  = D >= 16;
     const pShowWeeks = D >= 4 && D < 16;
     const HEAD = pShowDays || pShowWeeks ? 44 : 24;
+
+    // Row height shrinks to fit the sheet instead of being hard-coded at 20.
+    // A3 landscape is ~1123px tall at 96dpi and the @page bottom margin takes
+    // 8mm; everything except the rows is fixed chrome, so the rows get what's
+    // left. Previously R was fixed and `.content` clipped the overflow, so a
+    // long lookahead silently lost its last activities off the bottom of a
+    // sheet being handed to the Village.
+    const PAGE_H   = 1123 - 30;                       // sheet minus bottom margin
+    const CHROME_H = 64 + 44 + 16                     // banner + fixed footer + padding
+      + (hideLegendOnPrint ? 0 : 26)                  // legend strip
+      + (lookaheadStyle ? 26 : 0);                    // readiness key strip
+    const AVAIL_H  = Math.max(160, PAGE_H - CHROME_H - HEAD);
+    const R = Math.max(11, Math.min(20, Math.floor(AVAIL_H / Math.max(1, pRows))));
 
     // Month segments
     const months: { offset: number; count: number; label: string }[] = [];
@@ -1094,22 +1127,12 @@ export default function MsProjectGantt({
       const predItem = pItems[predIdx], succItem = pItems[succIdx];
       if (predItem.kind !== "task" || succItem.kind !== "task") continue;
       const predTask = predItem.task, succTask = succItem.task;
-      const predHasKids = (cm.get(predTask.id) ?? []).length > 0;
-      const succHasKids = (cm.get(succTask.id) ?? []).length > 0;
       const x1 = (diffInDays(pStart, predTask.end_date) + 1) * D;
       const x2 = diffInDays(pStart, succTask.start_date) * D;
       const y1 = predIdx * R + R / 2;
       const y2 = succIdx * R + R / 2;
-      const midX = (x1 + x2) / 2;
-      const barHalf = predHasKids ? 4 : 8;
-      const succBarHalf = succHasKids ? 4 : 8;
-      let d: string;
-      if (Math.abs(y1 - y2) < 2) {
-        d = `M ${x1} ${y1} H ${x2}`;
-      } else {
-        const entryY = succIdx > predIdx ? y2 - (succBarHalf + 3) : y2 + (succBarHalf + 3);
-        d = `M ${x1} ${y1} H ${midX} V ${entryY} H ${x2} V ${y2}`;
-      }
+      // Same helper as the screen, so the printed links curve identically.
+      const d = curvedLink(x1, y1, x2, y2, Math.abs(y1 - y2) < 2);
       arrowsSVG += `<path d="${d}" fill="none" stroke="#94a3b8" stroke-width="1.2" marker-end="url(#ph)"/>`;
     }
 
@@ -1180,7 +1203,9 @@ export default function MsProjectGantt({
     }
 
     const chartW = pDays * D;
-    const chartH = all.length * R;
+    // pRows, not all.length — the chart has to reserve a row for every week band
+    // too, or it ends up shorter than the table beside it and the bars drift.
+    const chartH = pRows * R;
 
     // Legend items
     const legendItems: string[] = [];
@@ -1253,7 +1278,11 @@ export default function MsProjectGantt({
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  .content { flex: 1; padding: 8px; padding-bottom: 60px; overflow: hidden; }
+  /* visible, not hidden: R is sized to fit, but if a schedule is long enough to
+     beat the minimum row height it must spill onto a second sheet rather than
+     have its last rows quietly disappear. */
+  .content { flex: 1; padding: 8px; padding-bottom: 60px; overflow: visible; }
+  tr { break-inside: avoid; page-break-inside: avoid; }
 </style>
 </head><body>
 
@@ -1271,7 +1300,7 @@ export default function MsProjectGantt({
 
 <!-- ── SCHEDULE GRID ── -->
 <div class="content">
-  <div style="display:flex;border:1px solid #cbd5e1;border-radius:4px;overflow:hidden;height:100%">
+  <div style="display:flex;border:1px solid #cbd5e1;border-radius:4px;min-height:100%">
     <!-- Left: task table -->
     <div style="flex-shrink:0;border-right:2px solid #1A3560">
       <table>
@@ -2009,7 +2038,6 @@ ${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
             // hierarchy order — in lookahead style the two differ.
             const rowIndex = new Map(rowsFlat.map((t, i) => [t.id, i]));
             const yOf = (id: string) => (rowGeom.tops.get(id) ?? 0) + ROW_H / 2;
-            const STEP = 10;
             const arrows: { key: string; d: string }[] = [];
             for (const dep of deps) {
               const predRow = rowIndex.get(dep.predecessor_id);
@@ -2020,25 +2048,16 @@ ${!lookaheadStyle ? "" : `<!-- ── READINESS KEY ──
               if (!pred || !succ) continue;
               const predIsMile = (pred.is_milestone ?? false) || (pred.is_constraint ?? false);
               const succIsMile = (succ.is_milestone ?? false) || (succ.is_constraint ?? false);
-              const succHasKids = (cm.get(succ.id) ?? []).length > 0;
-              const succBarHalf = succIsMile ? 9 : succHasKids ? 5 : 11;
               const x1 = predIsMile ? dayOff(pred.end_date) * DAY_W + DAY_W / 2 : dayOff(pred.end_date) * DAY_W + DAY_W;
               const y1 = yOf(dep.predecessor_id);
               const x2 = succIsMile ? dayOff(succ.start_date) * DAY_W + DAY_W / 2 - 10 : dayOff(succ.start_date) * DAY_W;
               const y2 = yOf(dep.task_id);
-              const midX = Math.max(x1 + STEP, x2 - STEP);
 
-              let d: string;
-              if (succRow === predRow) {
-                d = `M ${x1} ${y1} H ${x2}`;
-              } else {
-                // Approach the successor row from above (if below predecessor) or below
-                // (if above predecessor) so the arrow doesn't cross through the bar itself.
-                const entryY = succRow > predRow
-                  ? y2 - (succBarHalf + 4)
-                  : y2 + (succBarHalf + 4);
-                d = `M ${x1} ${y1} H ${midX} V ${entryY} H ${x2} V ${y2}`;
-              }
+              // Rounded S-curve rather than a stepped polyline. Leaves the
+              // predecessor horizontally and arrives at the successor
+              // horizontally, so the arrowhead still reads as "this feeds that"
+              // — the curve only replaces the hard corners in between.
+              const d = curvedLink(x1, y1, x2, y2, succRow === predRow);
               arrows.push({ key: `${dep.task_id}-${dep.predecessor_id}`, d });
             }
             return (
